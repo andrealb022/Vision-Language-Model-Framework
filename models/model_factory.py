@@ -2,6 +2,7 @@ from .blip2 import BLIP2OptModel
 from .llava import LLaVAModel
 from .paligemma import PaLIGemmaModel
 from .base_model import VLMModel
+import torch
 
 class VLMModelFactory:
     """
@@ -16,14 +17,15 @@ class VLMModelFactory:
     }
 
     @staticmethod
-    def create_model(model_name: str, model_id: str, **model_kwargs) -> VLMModel:
+    def create_model(model_name: str, model_id: str = None, device: torch.device = torch.device("cpu"), quantization: str ="fp32") -> VLMModel:
         """
         Crea un'istanza del modello VLM richiesto.
 
         Args:
             model_name (str): Nome simbolico del modello (e.g. "blip2", "llava", "paligemma").
             model_id (str): Identificativo del modello da HuggingFace o repository custom.
-            model_kwargs: Altri parametri da passare al costruttore del modello.
+            device: Device su cui caricare il modello (es. "cuda" o "cpu").
+            quantization: Quantizzazione del modello.
 
         Returns:
             VLMModel: Istanza del modello selezionato.
@@ -35,7 +37,7 @@ class VLMModelFactory:
         if model_name not in VLMModelFactory._registry:
             raise ValueError(f"Modello '{model_name}' non trovato. "
                              f"Disponibili: {list(VLMModelFactory._registry.keys())}")
-        return VLMModelFactory._registry[model_name](model_id=model_id, **model_kwargs)
+        return VLMModelFactory._registry[model_name](model_id, device, quantization)
 
     @staticmethod
     def get_available_models():
@@ -50,8 +52,7 @@ class VLMModelFactory:
 
 # Esempio di utilizzo:
 if __name__ == "__main__":
-    # Crea un'istanza del modello BLIP-2 con modello di default
-    model = VLMModelFactory.create_model("blip2", model_id="Salesforce/blip2-opt-6.7b")
-
     # Stampa i modelli disponibili nella factory
     print("Modelli disponibili:", VLMModelFactory.get_available_models())
+    # Crea un'istanza del modello BLIP-2 con modello di default
+    model = VLMModelFactory.create_model("blip2", model_id="Salesforce/blip2-opt-6.7b")

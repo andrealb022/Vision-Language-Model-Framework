@@ -1,48 +1,19 @@
 import argparse
 import torch
-import json
 from pathlib import Path
-from transformers import BitsAndBytesConfig
 from models.model_factory import VLMModelFactory
 from datasets.dataset_factory import DatasetFactory
 from evaluate import Evaluator
 import os
 from tqdm import tqdm
-
-def get_model_kwargs(args):
-    model_kwargs = {
-        "device_map": "auto",
-        "low_cpu_mem_usage": True,
-    }
-    if args.quantization == "8bit":
-        model_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_8bit=True,
-            llm_int8_enable_fp32_cpu_offload=True
-        )
-    elif args.quantization == "4bit":
-        model_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            llm_int8_enable_fp32_cpu_offload=True,
-            bnb_4bit_compute_dtype=torch.float16
-        )
-    elif args.quantization == "fp16":
-        model_kwargs["torch_dtype"] = torch.float16
-    return model_kwargs
-
-def get_dataset_kwargs(args):
-    return {
-        "train": args.train,
-        "transform": None,  # Placeholder for any transformations
-    }
+from dotenv import load_dotenv
+load_dotenv()  # Carica le variabili dal file .env
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple inference script")
-    parser.add_argument("--output_dir", type=str, default="output", help="Directory to save output files")
     # Model arguments
     parser.add_argument("--model_name", type=str, default="llava", choices=VLMModelFactory.get_available_models())
-    parser.add_argument("--quantization", type=str, default="fp32", choices=["4bit", "8bit", "fp16", "fp32"])
+    parser.add_argument("--quantization", type=str, default="fp16", choices=["4bit", "8bit", "fp16", "fp32"])
     # Dataset arguments
     parser.add_argument("--dataset_name", type=str, default="VggFace2-Test", choices=DatasetFactory.get_available_datasets())
     parser.add_argument("--train", type=bool, default=False, help="True -> dataset_train, False -> dataset_test")
@@ -50,16 +21,20 @@ def parse_args():
 
 def main():
     args = parse_args()
-    output_dir=os.path.join(args.output_dir, args.model_name, args.dataset_name, args.quantization)
-    # Setup del modello
-    model_kwargs = get_model_kwargs(args)
-    model_id = None  # Placeholder for model ID if needed
-    model = VLMModelFactory.create_model(args.model_name, model_id=model_id, **model_kwargs)
-    max_tokens = 100
-    # Setup del dataset
-    dataset_kwargs = get_dataset_kwargs(args)
-    dataset = DatasetFactory.create_dataset(args.dataset_name, **dataset_kwargs)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+    output_dir=os.path.join("output", args.model_name, args.dataset_name, args.quantization)
     
+    # Setup del modello
+    model_id = None  # Placeholder for model ID if needed
+    model = VLMModelFactory.create_model(args.model_name, model_id, device, args.quantization)
+    max_tokens = 100
+    
+    # Setup del dataset
+    base_path = None # Placeholder for base path if needed (altrimenti utilizza il base_path di default)
+    transform = None # Placeholder for any transformations
+    dataset = DatasetFactory.create_dataset(args.dataset_name, base_path=base_path, train=args.train, transform=transform)
+
     # Esegui inferenza
     if args.dataset_name == "MiviaPar":
         prompt = (
