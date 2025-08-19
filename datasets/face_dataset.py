@@ -13,7 +13,7 @@ class FaceDataset(BaseDataset):
     # Dataset supportati dalla factory
     SUPPORTED_DATASETS = [
         "CelebA_HQ", "FairFace", "LFW", "MiviaGender",
-        "RAF-DB", "TestDataset", "UTKFace", "VggFace2-Test"
+        "RAF-DB", "TestDataset", "UTKFace", "VggFace2-Test","VggFace2-Train"
     ]
 
     # Mappatura nominale per etnie
@@ -36,21 +36,23 @@ class FaceDataset(BaseDataset):
         "neutral": 6
     }
 
-    def __init__(self, **dataset_kwargs):
+    def __init__(self, dataset_name: str, base_path: Path, train: bool, transform):
         """
         Inizializza il dataset facciale.
 
         Args:
-            dataset_kwargs: Argomenti da passare a BaseDataset (es. dataset_name, train, transform).
+            dataset_name (str): Nome del dataset (usato come sottocartella).
+            base_path (Path, optional): Percorso base. Default = ~/datasets_with_standard_labels/
+            train (bool): Se True usa la partizione 'train/', altrimenti 'test/'.
+            transform (callable, optional): Trasformazioni da applicare all'immagine (es. torchvision).
         """
-        super().__init__(**dataset_kwargs)
-
-        dataset_name = dataset_kwargs.get("dataset_name", None)
         if dataset_name not in self.SUPPORTED_DATASETS:
             raise ValueError(
                 f"[Errore] Dataset '{dataset_name}' non supportato. "
                 f"Supportati: {sorted(self.SUPPORTED_DATASETS)}"
             )
+        else:
+            super().__init__(dataset_name=dataset_name, base_path=base_path, train=train, transform=transform)
 
     @staticmethod
     def get_available_datasets():

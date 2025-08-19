@@ -1,5 +1,6 @@
 from .mivia_par_dataset import MiviaParDataset
 from .face_dataset import FaceDataset
+from tqdm import tqdm
 
 class DatasetFactory:
     """
@@ -25,13 +26,15 @@ class DatasetFactory:
                 _dataset_registry[name] = dataset_cls
 
     @staticmethod
-    def create_dataset(dataset_name, **kwargs):
+    def create_dataset(dataset_name, base_path=None, train=False, transform=None):
         """
         Crea un'istanza del dataset specificato dal nome.
 
         Args:
             dataset_name (str): Nome simbolico del dataset (es. "MiviaPar", "UTKFace").
-            **kwargs: Argomenti da passare al costruttore del dataset (es. train=True, transform=...).
+            base_path (str, optional): Percorso di base per il dataset.
+            train (bool): Indica se il dataset è in modalità di addestramento o test.
+            transform (callable, optional): Funzione di trasformazione da applicare ai campioni.
 
         Returns:
             BaseDataset: Istanza del dataset richiesto.
@@ -45,7 +48,7 @@ class DatasetFactory:
                              f"Dataset disponibili: {available_datasets}")
         
         dataset_class = DatasetFactory._dataset_registry[dataset_name]
-        return dataset_class(dataset_name=dataset_name, **kwargs)
+        return dataset_class(dataset_name=dataset_name, base_path=base_path, train=train, transform=transform)
 
     @staticmethod
     def get_available_datasets():
@@ -60,8 +63,8 @@ class DatasetFactory:
 
 # Esempio di utilizzo:
 if __name__ == "__main__":
-    # Crea un dataset MIVIA PAR per il test set
-    dataset = DatasetFactory.create_dataset("MiviaPar", train=False)
-
     # Mostra i dataset disponibili
     print("Dataset disponibili:", DatasetFactory.get_available_datasets())
+
+    # Crea un dataset
+    dataset = DatasetFactory.create_dataset("VggFace2-Train", train=True)

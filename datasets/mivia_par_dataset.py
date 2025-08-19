@@ -33,11 +33,17 @@ class MiviaParDataset(BaseDataset):
         "yellow": 11
     }
 
-    def __init__(self, **dataset_kwargs):
+    def __init__(self, dataset_name: str, base_path, train: bool, transform):
         """
         Inizializza il dataset MIVIA PAR.
+        
+        Args:
+            dataset_name (str): Nome del dataset (usato come sottocartella).
+            base_path (Path, optional): Percorso base. Default = ~/datasets_with_standard_labels/
+            train (bool): Se True usa la partizione 'train/', altrimenti 'test/'.
+            transform (callable, optional): Trasformazioni da applicare all'immagine (es. torchvision).
         """
-        super().__init__(**dataset_kwargs)
+        super().__init__(dataset_name=dataset_name, base_path=base_path, train=train, transform=transform)
 
     @staticmethod
     def get_available_datasets():

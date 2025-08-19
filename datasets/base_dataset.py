@@ -28,7 +28,7 @@ class BaseDataset(Dataset, ABC):
     - `get_labels_from_text_output()`: per estrarre le etichette a partire dall'output testuale di un VLM
     """
 
-    def __init__(self, dataset_name: str, base_path: Path = None, train: bool = False, transform=None):
+    def __init__(self, dataset_name: str, base_path: Path, train: bool, transform:callable):
         """
         Inizializza il dataset.
 
