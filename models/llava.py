@@ -2,6 +2,7 @@ import torch
 from PIL import Image
 from transformers import LlavaForConditionalGeneration
 from .base_model import VLMModel
+from .base_vision_backbone import VisionBackbone
 
 class LLaVAModel(VLMModel):
     """
@@ -55,46 +56,50 @@ class LLaVAModel(VLMModel):
         ]
 
         # Converte il formato chat in prompt lineare per il modello
-        prompt = self.processor.apply_chat_template(
-            conversation,
-            add_generation_prompt=True
-        )
-
+        prompt = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
         return super().generate_text(image, prompt, max_tokens=max_tokens)
 
-    def get_image_features(self, image: Image.Image, strategy: str = "mean") -> torch.Tensor:
+    def get_vision_backbone(self):
         """
-        Estrae un embedding visivo globale usando direttamente la vision_tower di LLaVA.
-
-        Args:
-            image (PIL.Image.Image): Immagine di input.
-            strategy (str): Strategia di pooling: "mean" oppure "cls"
+        Ritorna un backbone visivo uniforme (VisionBackbone) per il probing.
 
         Returns:
-            torch.Tensor: Embedding visivo [B, D]
+            VisionBackbone: adapter che produce embedding globali [B, D].
         """
-        # SI PUO FARE ANCHE CON IMAGE_FEATURES
-        # Preprocessamento immagine
-        inputs = self.processor(
-            images=image,
-            text="Describe this image",  # richiesto anche se ignorato
-            return_tensors="pt"
-        )
-        pixel_values = inputs["pixel_values"].to(self.device)
+        return LLaVABackbone(self.processor, self.model.vision_tower, 1024, self.device)
 
-        # Sposta vision_tower su device
-        self.model.vision_tower.to(self.device)
-        self.model.multi_modal_projector.to(self.device)
-        # Estrazione feature raw dal vision encoder (es. CLIP-ViT)
+################## BACKBONE PER ESTRAZIONE DI FEATURES ##################
+class LLaVABackbone(VisionBackbone):
+    """
+    Adapter per LLaVA che estrae feature raw dal backbone visivo (CLIP).
+    
+    - Usa `vision_tower` (un `CLIPVisionModel`) per ottenere i token per-patch
+      tramite `last_hidden_state` con shape [B, N, D].
+    - Nei checkpoint LLaVA il `pooler_output` del vision encoder è in genere assente (None):
+      per ottenere un embedding globale [B, D] facciamo pooling manuale.
+    - Il pooling può essere:
+        * "cls": prende il token [CLS] (indice 0) → valido per CLIP.
+        * "mean": media sui token (robusto e generalizzabile).
+    """
+    def __init__(self, processor, vision_model, output_dim, device):
+        super().__init__(processor, vision_model, output_dim, device)
+
+    def forward(self, images, strategy: str = "cls"):
+        """
+        Args:
+            images: PIL.Image o List[PIL.Image].
+            strategy: "cls" (default) oppure "mean".
+        Returns:
+            torch.Tensor: embedding globali [B, D] sul device della backbone.
+        """
+        inputs = self.processor(images=images, text="Describe this image", return_tensors="pt").to(self.device)  # sposta su device
+        # Estrazione feature raw dal vision encoder (CLIP)
         with torch.no_grad():
-            image_embeds = self.model.vision_tower(pixel_values).last_hidden_state  # [B, N, D]
-            # Applica il multi-modal projector (mapping -> lingua)
-            image_embeds = self.model.multi_modal_projector(image_embeds)  # [B, N, D']
-            print(image_embeds)
+            image_embeds = self.vision_model(inputs["pixel_values"]).last_hidden_state  # [B, N, D]
         # Pooling: CLS token o media
         if strategy == "cls":
-            return image_embeds[:, 0]  # [B, D']
+            return image_embeds[:, 0]  # [B, D]
         elif strategy == "mean":
-            return image_embeds.mean(dim=1)  # [B, D']
+            return image_embeds.mean(dim=1)  # [B, D]
         else:
             raise ValueError(f"Strategia pooling '{strategy}' non supportata")

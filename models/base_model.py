@@ -43,15 +43,12 @@ class VLMModel(ABC):
         pass
 
     @abstractmethod
-    def get_image_features(self, image: Image.Image):
+    def get_vision_backbone(self):
         """
-        Estrae le caratteristiche visive da un'immagine.
-
-        Args:
-            image (PIL.Image.Image): Immagine di input.
+        Ritorna il backbone visivo per l'estrazione delle caratteristiche.
 
         Returns:
-            torch.Tensor: Caratteristiche visive estratte.
+            VisionBackbone: Il backbone visivo utilizzato dal modello.
         """
         pass
 

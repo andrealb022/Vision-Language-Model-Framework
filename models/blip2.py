@@ -2,6 +2,7 @@ import torch
 from PIL import Image
 from transformers import Blip2ForConditionalGeneration
 from .base_model import VLMModel
+from .base_vision_backbone import VisionBackbone
 
 class BLIP2OptModel(VLMModel):
     """
@@ -46,24 +47,35 @@ class BLIP2OptModel(VLMModel):
         prompt = f"Question: {prompt}. Answer:"
         return super().generate_text(image, prompt, max_tokens=max_tokens)
 
-    def get_image_features(self, image: Image.Image):
+    def get_vision_backbone(self):
         """
-        Estrae le caratteristiche visive da un'immagine.
-
-        Args:
-            image (PIL.Image.Image): Immagine di input.
+        Ritorna un backbone visivo uniforme (VisionBackbone) per il probing.
 
         Returns:
-            torch.Tensor: Caratteristiche visive estratte.
+            VisionBackbone: adapter che produce embedding globali [B, D].
         """
-        # Preprocessing dell'immagine
-        inputs = self.processor(images=image, return_tensors="pt")
-        pixel_values = inputs["pixel_values"].to(self.device)  # sposta su device
+        return BLIP2Backbone(self.processor, self.model.vision_model, 1408, self.device)
 
-        # Sposta vision_model sul device corretto
-        self.model.vision_model = self.model.vision_model.to(self.device)
+################## BACKBONE PER ESTRAZIONE DI FEATURES ##################
+class BLIP2Backbone(VisionBackbone):
+    """
+    Adapter per BLIP-2:
+    - Usa il vision encoder (self.vision_model) direttamente.
+    - Restituisce l'embedding globale tramite `pooler_output` se disponibile.
+    """
+    def __init__(self, processor, vision_model, output_dim, device):
+        super().__init__(processor, vision_model, output_dim, device)
 
+    def forward(self, images):
+        """
+        Args:
+            images (PIL.Image or List[PIL.Image]): immagini d'ingresso.
+
+        Returns:
+            torch.Tensor: embedding globali [B, D] sul device scelto.
+        """
+        inputs = self.processor(images=images, return_tensors="pt").to(self.device)  # sposta su device
+        # Estrazione feature raw dal vision encoder (BLIP2)
         with torch.no_grad():
-            vision_outputs = self.model.vision_model(pixel_values=pixel_values)
-
+            vision_outputs = self.vision_model(pixel_values=inputs["pixel_values"])
         return vision_outputs.pooler_output
