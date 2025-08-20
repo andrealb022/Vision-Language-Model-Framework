@@ -1,13 +1,18 @@
+# Percorso di progetto
+from dotenv import load_dotenv
+import os, sys
+load_dotenv()   # carica variabili da .env
+project_root = os.getenv("PYTHONPATH")  # aggiungi PYTHONPATH se definito
+if project_root and project_root not in sys.path:
+    sys.path.append(project_root)
 import argparse
 import torch
 from pathlib import Path
 from models.model_factory import VLMModelFactory
-from datasets.dataset_factory import DatasetFactory
-from evaluate import Evaluator
+from datasets_vlm.dataset_factory import DatasetFactory
+from datasets_vlm.evaluate import Evaluator
 import os
 from tqdm import tqdm
-from dotenv import load_dotenv
-load_dotenv()  # Carica le variabili dal file .env
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple inference script")
@@ -23,8 +28,13 @@ def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
-    output_dir=os.path.join("output", args.model_name, args.dataset_name, args.quantization)
-    
+    # Imposta il path di output relativo al project_root
+    if project_root:
+        output_dir = os.path.join(project_root, "output", args.model_name, args.dataset_name, args.quantization)
+    else:
+        print("PYTHONPATH non definito. Utilizzo 'output' relativo alla directory corrente.")
+        output_dir = os.path.join("output", args.model_name, args.dataset_name, args.quantization)
+
     # Setup del modello
     model_id = None  # Placeholder for model ID if needed
     model = VLMModelFactory.create_model(args.model_name, model_id, device, args.quantization)

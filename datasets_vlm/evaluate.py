@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from sklearn.metrics import accuracy_score, confusion_matrix, mean_absolute_error
 import matplotlib.pyplot as plt
-from datasets.face_dataset import FaceDataset
+from .face_dataset import FaceDataset
 
 class Evaluator:
     """
