@@ -1,5 +1,6 @@
 __pycache__/
-output/
+eval/
 face_detector/
 .env
 log.txt
+linear_probing/checkpoints/
