@@ -30,10 +30,10 @@ def main():
     print("Using device:", device)
     # Imposta il path di output relativo al project_root
     if project_root:
-        output_dir = os.path.join(project_root, "output", args.model_name, args.dataset_name, args.quantization)
+        output_dir = os.path.join(project_root, "eval", args.model_name, args.dataset_name, args.quantization)
     else:
         print("PYTHONPATH non definito. Utilizzo 'output' relativo alla directory corrente.")
-        output_dir = os.path.join("output", args.model_name, args.dataset_name, args.quantization)
+        output_dir = os.path.join("eval", args.model_name, args.dataset_name, args.quantization)
 
     # Setup del modello
     model_id = None  # Placeholder for model ID if needed
