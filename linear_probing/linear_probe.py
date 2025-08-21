@@ -5,9 +5,11 @@ load_dotenv()   # carica variabili da .env
 project_root = os.getenv("PYTHONPATH")  # aggiungi PYTHONPATH se definito
 if project_root and project_root not in sys.path:
     sys.path.append(project_root)
+
 import torch
 import torch.nn as nn
 from models.base_vision_backbone import VisionBackbone
+from pathlib import Path
 
 # Variabili
 DROPOUT_P = 0.3
@@ -38,6 +40,11 @@ class LinearProbe(nn.Module):
         return self.backbone(images)
 
     def forward(self, images):
+        """
+        Metodo di forward del modello.
+        Args:
+            images: PIL.Image o List[PIL.Image] (il formato esatto può dipendere dal processor).
+        """
         feats = self.extract_features(images)   # [B, D]
 
         # Casting delle feature al dtype del classifier
@@ -46,12 +53,3 @@ class LinearProbe(nn.Module):
             feats = feats.to(target_dtype)
         logits = self.classifier(feats)         # [B, C]
         return logits
-
-    def save(self):
-        pass
-    
-    def load(self):
-        pass
-    
-    def save_head(self):
-        pass
