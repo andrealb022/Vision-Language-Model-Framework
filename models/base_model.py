@@ -43,7 +43,7 @@ class VLMModel(ABC):
         pass
 
     @abstractmethod
-    def get_vision_backbone(self):
+    def get_vision_backbone(self, cleanup: bool):
         """
         Ritorna il backbone visivo per l'estrazione delle caratteristiche.
 

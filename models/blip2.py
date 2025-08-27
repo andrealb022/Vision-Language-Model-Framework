@@ -47,14 +47,27 @@ class BLIP2OptModel(VLMModel):
         prompt = f"Question: {prompt}. Answer:"
         return super().generate_text(image, prompt, max_tokens=max_tokens)
 
-    def get_vision_backbone(self):
+    def get_vision_backbone(self, cleanup=True):
         """
-        Ritorna un backbone visivo uniforme (VisionBackbone) per il probing.
+        Ritorna un backbone visivo (VisionBackbone) per il probing.
+        Se cleanup=True, rimuove i riferimenti pesanti dal VLM per risparmiare memoria.
+        """
+        backbone = BLIP2Backbone(self.processor, self.model.vision_model, 1408, self.device)
+        if cleanup:
+            # Mantieni solo vision_model, rimuovi gli altri sottocomponenti
+            for name in list(self.model._modules.keys()):
+                if name != "vision_model":
+                    print(f"Pulizia del modulo: {name}")
+                    delattr(self.model, name)
 
-        Returns:
-            VisionBackbone: adapter che produce embedding globali [B, D].
-        """
-        return BLIP2Backbone(self.processor, self.model.vision_model, 1408, self.device)
+            # Sgancia riferimenti pesanti: il backbone ha già visual_model + processor
+            self.model = None
+            self.processor = None
+            import gc, torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return backbone
 
 ################## BACKBONE PER ESTRAZIONE DI FEATURES ##################
 class BLIP2Backbone(VisionBackbone):

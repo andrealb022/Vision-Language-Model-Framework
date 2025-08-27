@@ -61,14 +61,27 @@ class PaLIGemmaModel(VLMModel):
         prompt = f"<image> {prompt}"
         return super().generate_text(image, prompt, max_tokens=max_tokens)
 
-    def get_vision_backbone(self):
+    def get_vision_backbone(self, cleanup=True):
         """
-        Ritorna un backbone visivo uniforme (VisionBackbone) per il probing.
+        Ritorna la backbone visiva.
+        Se cleanup=True, conserva solo la vision_tower e rimuove tutto il resto.
+        """
+        backbone = PaliGemmaBackbone(self.processor, self.model.vision_tower, 1152, self.device)
+        if cleanup:
+            # Mantieni solo vision_tower, rimuovi gli altri sottocomponenti
+            for name in list(self.model._modules.keys()):
+                if name != "vision_tower":
+                    print(f"Pulizia del modulo: {name}")
+                    delattr(self.model, name)
 
-        Returns:
-            VisionBackbone: adapter che produce embedding globali [B, D].
-        """
-        return PaliGemmaBackbone(self.processor, self.model.vision_tower, 1152, self.device)
+            # Sgancia riferimenti pesanti: il backbone ha già visual_tower + processor
+            self.model = None
+            self.processor = None
+            import gc, torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return backbone
 
 ################## BACKBONE PER ESTRAZIONE DI FEATURES ##################
 class PaliGemmaBackbone(VisionBackbone):
