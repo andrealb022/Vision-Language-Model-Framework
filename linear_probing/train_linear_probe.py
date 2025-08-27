@@ -8,7 +8,6 @@ Dataset e task disponibili:
 - RAF-DB          → gender, facial emotion
 - VggFace2-Train  → gender, age
 """
-
 from dotenv import load_dotenv
 import os, sys
 load_dotenv()
@@ -27,16 +26,13 @@ from torch import nn, optim
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm import tqdm
 from collections import defaultdict
-
 from models.model_factory import VLMModelFactory
 from datasets_vlm.dataset_factory import DatasetFactory
 from linear_probing.linear_probe import LinearProbe
 
-
 # -----------------------
 # Utility
 # -----------------------
-
 def set_seed(seed: int = 42):
     """Imposta il seed per riproducibilità su Python, NumPy e PyTorch."""
     random.seed(seed)
@@ -44,11 +40,9 @@ def set_seed(seed: int = 42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-
 def is_classification(task: str) -> bool:
     """Ritorna True se il task è di classificazione, False se regressione."""
     return task.lower() in {"gender", "ethnicity", "emotion", "facial emotion"}
-
 
 def get_num_classes_for_task(task: str) -> int:
     """Ritorna il numero di classi attese per un dato task di classificazione."""
@@ -60,7 +54,6 @@ def get_num_classes_for_task(task: str) -> int:
     if t == "ethnicity":
         return 4
     raise ValueError(f"Task di classificazione non riconosciuto: {task}")
-
 
 def stratified_indices(labels, val_ratio=0.2, seed=42):
     """
@@ -87,7 +80,6 @@ def stratified_indices(labels, val_ratio=0.2, seed=42):
     rng.shuffle(train_idx)
     rng.shuffle(val_idx)
     return train_idx, val_idx
-
 
 # -----------------------
 # Collate e conversione target (PIL → processor in backbone)
@@ -123,7 +115,6 @@ def targets_to_tensor(targets_list, task: str, device):
             ys.append(float(tgt.get("age")))
         y = torch.tensor(ys, dtype=torch.float32, device=device).unsqueeze(1)
     return y
-
 
 # -----------------------
 # Argparse
@@ -191,9 +182,8 @@ def load_checkpoint(path: Path, probe: nn.Module,
     """
     Carica un checkpoint restituendo (start_epoch, best_val_loss, meta).
     Ripristina stato modello, optimizer e scheduler se presenti.
-    Nota: qui usiamo weights_only=False perché vogliamo anche optimizer/scheduler.
     """
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)  # esplicito → niente FutureWarning
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
     probe.load_state_dict(ckpt["model_state"], strict=True)
     if optimizer is not None and "optimizer_state" in ckpt and ckpt["optimizer_state"] is not None:
         optimizer.load_state_dict(ckpt["optimizer_state"])
@@ -232,7 +222,7 @@ def main():
     model_id = None
     vlm = VLMModelFactory.create_model(args.model_name, model_id, device, args.quantization)
     backbone = vlm.get_vision_backbone()
-
+    del vlm
     # Task e dimensione output
     task_lower = args.task.lower()
     is_cls = is_classification(task_lower)
@@ -293,7 +283,7 @@ def main():
     if is_cls:
         criterion = nn.CrossEntropyLoss()
     else:
-        criterion = nn.L1Loss()  # MAE per age
+        criterion = nn.MSELoss()  # MSE per age
 
     trainable_params = [p for p in probe.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
@@ -369,7 +359,7 @@ def main():
         if is_cls:
             train_metrics["acc"] = train_acc_accum / max(1, n_train)
         else:
-            train_metrics["mae"] = train_loss
+            train_metrics["mse"] = train_loss
 
         # ---- Validation ----
         probe.eval()
@@ -394,13 +384,13 @@ def main():
         if is_cls:
             val_metrics["acc"] = val_acc_accum / max(1, n_val)
         else:
-            val_metrics["mae"] = val_loss
+            val_metrics["mse"] = val_loss
 
         history["train"].append(train_metrics)
         history["val"].append(val_metrics)
         print(f"[Epoch {epoch+1}] train: {train_metrics} | val: {val_metrics}")
 
-        # Early stopping su val_loss (o MAE per age)
+        # Early stopping su val_loss (o MSE per age)
         if val_loss < best_val_loss - 1e-8:
             best_val_loss = val_loss
             patience_left = args.patience
