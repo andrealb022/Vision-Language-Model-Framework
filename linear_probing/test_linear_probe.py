@@ -123,6 +123,7 @@ def main():
     model_id = None
     vlm = VLMModelFactory.create_model(args.model_name, model_id, device, args.quantization)
     backbone = vlm.get_vision_backbone()
+    del vlm
 
     # Output head size
     task_lower = args.task.lower()
