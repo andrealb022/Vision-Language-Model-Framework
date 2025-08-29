@@ -109,3 +109,42 @@ class PaliGemmaBackbone(VisionBackbone):
         with torch.no_grad():
             image_embeds = self.vision_model(inputs['pixel_values']).last_hidden_state  # [B, N, D]
         return image_embeds.mean(dim=1)  # [B, D]
+    
+    def get_lora_target_names(self, strategy):
+        """
+        strategy es.: {"last_k": 2, "attn_only": True}
+        Ritorna i nomi (relativi alla backbone) dei nn.Linear negli ultimi K layer del SigLIP encoder.
+        """
+        import re
+        last_k = int(strategy.get("last_k", 2))
+        attn_only = bool(strategy.get("attn_only", True))
+
+        layer_indices = []
+        for name, _ in self.named_modules():
+            m = re.search(r"encoder\.layers\.(\d+)", name)
+            if m:
+                layer_indices.append(int(m.group(1)))
+        if not layer_indices:
+            return []
+
+        max_idx = max(layer_indices)
+        selected = set(range(max(0, max_idx - last_k + 1), max_idx + 1))
+
+        def is_target(n: str) -> bool:
+            m = re.search(r"encoder\.layers\.(\d+)", n)
+            if not m or int(m.group(1)) not in selected:
+                return False
+            if attn_only:
+                return ("self_attn.q_proj" in n or
+                        "self_attn.k_proj" in n or
+                        "self_attn.v_proj" in n or
+                        "self_attn.out_proj" in n)
+            else:
+                return ("self_attn.q_proj" in n or
+                        "self_attn.k_proj" in n or
+                        "self_attn.v_proj" in n or
+                        "self_attn.out_proj" in n or
+                        "mlp.fc1" in n or
+                        "mlp.fc2" in n)
+
+        return self._find_linear(is_target)

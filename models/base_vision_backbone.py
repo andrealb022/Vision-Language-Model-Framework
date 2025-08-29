@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
+from typing import List, Dict, Callable
 
 class VisionBackbone(nn.Module, ABC):
     """
@@ -35,3 +36,20 @@ class VisionBackbone(nn.Module, ABC):
             torch.Tensor: embedding globali con shape [B, D] sul device `self.device`.
         """
         pass
+    
+    @abstractmethod
+    def get_lora_target_names(self, strategy: Dict) -> List[str]:
+        """
+        Ritorna la lista di path relativi ai sotto-moduli *interni alla backbone*
+        (quindi nomi come 'vision_model.encoder.layers.10.attn.q_proj', ecc.).
+        Lo strato superiore (es. 'backbone.') lo aggiungerai tu quando costruisci
+        i target per l'intero modello (es. LinearProbe).
+        """
+        pass
+    
+    def _find_linear(self, name_pred: Callable[[str], bool]) -> List[str]:
+        out = []
+        for name, m in self.named_modules():
+            if isinstance(m, nn.Linear) and name_pred(name):
+                out.append(name)
+        return out
