@@ -4,3 +4,4 @@ face_detector/
 .env
 log.txt
 linear_probing/checkpoints/
+LoRA/
