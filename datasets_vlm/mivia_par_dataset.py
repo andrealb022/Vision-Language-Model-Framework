@@ -1,6 +1,7 @@
 import pandas as pd
 from .base_dataset import BaseDataset
 import random
+from tqdm import tqdm
 
 class MiviaParDataset(BaseDataset):
     """
@@ -69,7 +70,7 @@ class MiviaParDataset(BaseDataset):
         df = pd.read_csv(self.label_file, header=None, names=column_names)
 
         samples = []
-        for idx, row in df.iterrows():
+        for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Loading labels"):
             try:
                 image_path = self.image_folder / row["path"]
                 labels = {

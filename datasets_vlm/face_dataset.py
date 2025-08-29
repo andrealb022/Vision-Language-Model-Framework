@@ -2,6 +2,7 @@ import pandas as pd
 from pathlib import Path
 from .base_dataset import BaseDataset
 import random
+from tqdm import tqdm
 
 class FaceDataset(BaseDataset):
     """
@@ -75,7 +76,7 @@ class FaceDataset(BaseDataset):
         df = pd.read_csv(self.label_file)
         samples = []
 
-        for idx, row in df.iterrows():
+        for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Loading labels"):
             try:
                 # Path relativo all'immagine
                 relative_path = Path(row["Path"].replace("\\", "/"))
