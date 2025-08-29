@@ -1,5 +1,8 @@
 """
-Linear Probe - Test/Evaluation Script
+Linear Probe - Test/Evaluation Script (compatibile con:
+ - salvataggi LoRA: adapter dir (PEFT) + modules_to_save (classifier)
+ - salvataggi no-LoRA: directory con solo classifier.pt
+)
 
 Dataset e task disponibili per il test:
 - CelebA_HQ       → gender
@@ -29,33 +32,23 @@ from linear_probing.linear_probe import LinearProbe
 from datasets_vlm.dataset_factory import DatasetFactory
 from datasets_vlm.evaluate import Evaluator
 
+# PEFT (per la modalità LoRA)
+from peft import PeftModel
 
 # -----------------------
-# Utility (coerenti con train)
+# Utility coerenti con train
 # -----------------------
-
 def is_classification(task: str) -> bool:
-    """Ritorna True se il task è di classificazione, False se regressione."""
     return task.lower() in {"gender", "ethnicity", "emotion", "facial emotion"}
 
 def get_num_classes_for_task(task: str) -> int:
-    """Ritorna il numero di classi attese per un dato task di classificazione."""
     t = task.lower()
-    if t == "gender":
-        return 2
-    if t in {"emotion", "facial emotion"}:
-        return 7
-    if t == "ethnicity":
-        return 4
+    if t == "gender": return 2
+    if t in {"emotion", "facial emotion"}: return 7
+    if t == "ethnicity": return 4
     raise ValueError(f"Task di classificazione non riconosciuto: {task}")
 
 def collate_keep_pil(batch):
-    """
-    Collate che conserva le immagini come PIL.Image senza stackarle.
-    Restituisce:
-      - images_list: lista di PIL.Image
-      - targets_list: lista di dict target originali
-    """
     images_list = [b[0] for b in batch]
     targets_list = [b[1] for b in batch]
     return images_list, targets_list
@@ -63,9 +56,8 @@ def collate_keep_pil(batch):
 # -----------------------
 # Argparse
 # -----------------------
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="Linear Probe testing (PIL → processor)")
+    parser = argparse.ArgumentParser(description="Linear Probe testing (PIL → processor) compatibile con LoRA/head-only")
     # Model args
     parser.add_argument("--model_name", type=str, default="llava",
                         choices=VLMModelFactory.get_available_models())
@@ -74,72 +66,82 @@ def parse_args():
     # Dataset args (test)
     parser.add_argument("--dataset_name", type=str, default="VggFace2-Test",
                         choices=DatasetFactory.get_available_datasets())
-    parser.add_argument("--task", type=str, default="age",
+    parser.add_argument("--task", type=str, default="gender",
                         help="gender | ethnicity | emotion | age")
     parser.add_argument("--base_path", type=str, default=None)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--num_workers", type=int, default=8)
 
-    # Checkpoint
-    parser.add_argument("--ckpt_path", type=str, default="linear_probing/checkpoints/llava_fp32_VggFace2-Train_age.pth",
-                        help="Checkpoint .pth da cui prendere il modello salvato")
+    # Checkpoint directory (non .pth):
+    # - se LoRA: directory adapter PEFT (contiene adapter_config + modules_to_save della head)
+    # - se no-LoRA: directory della head (contiene classifier.pt)
+    parser.add_argument("--ckpt_dir", type=str, default="linear_probing/checkpoints/llava_fp32_RAF-DB_gender_adapters",
+                        help="Directory di checkpoint: adapters (LoRA) oppure head-only (classifier.pt)")
+    parser.add_argument("--use_lora", action="store_true", default=True,
+                        help="Imposta True se il checkpoint è una directory PEFT di adapter LoRA")
 
-    # Output valutazione (relativo a project_root/evaluate.py)
+    # Output valutazione
     parser.add_argument("--eval_subdir", type=str, default=None,
-                        help="Sottocartella (relativa a project_root) dove salvare i risultati dell'eval."
-                             " Se None: usa 'eval/{model}_{quant}_{dataset}_{task}'")
+                        help="Sottocartella (relativa a project_root) per salvare i risultati dell'eval. "
+                             "Se None: usa 'eval/{model}_{quant}_{dataset}_{task}'")
     return parser.parse_args()
-
 
 # -----------------------
 # Main
 # -----------------------
-
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
-    # Checkpoint default
-    if args.ckpt_path is not None:
-        if project_root:
-            ckpt_dir = Path(project_root) / args.ckpt_path
-        else:
-            ckpt_dir = Path(args.ckpt_path)
-        if not ckpt_dir.exists():
-            raise FileNotFoundError(f"Checkpoint non trovato: {ckpt_dir}")
-    else:
-        raise FileNotFoundError(f"Checkpoint non specificato")
+    # Verifica directory di checkpoint
+    if args.ckpt_dir is None:
+        raise FileNotFoundError("Checkpoint directory non specificata (--ckpt_dir).")
+    ckpt_dir = Path(args.ckpt_dir if not project_root else os.path.join(project_root, args.ckpt_dir))
+    ckpt_dir = ckpt_dir.resolve()
+    if not ckpt_dir.exists() or not ckpt_dir.is_dir():
+        raise FileNotFoundError(f"Directory checkpoint non trovata: {ckpt_dir}")
 
     # Output dir per Evaluator (relativa a project_root)
     if args.eval_subdir is None:
-        eval_subdir = Path(project_root) / "eval" / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}"
+        base = Path(project_root) if project_root else Path(".")
+        eval_subdir = base / "eval" / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}"
     else:
         eval_subdir = Path(args.eval_subdir)
-
+        if project_root and not eval_subdir.is_absolute():
+            eval_subdir = Path(project_root) / eval_subdir
     eval_subdir.mkdir(parents=True, exist_ok=True)
 
     # Modello e backbone coerenti col training
     model_id = None
     vlm = VLMModelFactory.create_model(args.model_name, model_id, device, args.quantization)
     backbone = vlm.get_vision_backbone()
-    print(vlm)
     del vlm
 
     # Output head size
     task_lower = args.task.lower()
     is_cls = is_classification(task_lower)
-    if is_cls:
-        n_out = get_num_classes_for_task(task_lower)
-    else:
-        n_out = 1  # regressione age
+    n_out = get_num_classes_for_task(task_lower) if is_cls else 1
 
+    # LinearProbe con backbone SEMPRE frozen
     probe = LinearProbe(backbone=backbone, n_out_classes=n_out, freeze_backbone=True).to(device)
-    # Caricamento pesi dal checkpoint salvato dal training
-    ckpt = torch.load(ckpt_dir, map_location="cpu", weights_only=True)
-    state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-    probe.load_state_dict(state_dict, strict=True)
-    probe.eval()
+
+    # Caricamento pesi:
+    if args.use_lora:
+        # Directory PEFT di adapter LoRA + modules_to_save (classifier)
+        # (ci aspettiamo file tipo adapter_config.json e adapter_model.bin/safetensors)
+        print(f"[LOAD] Modalità LoRA: carico adapter+head da {ckpt_dir}")
+        probe = PeftModel.from_pretrained(probe, ckpt_dir.as_posix()).to(device).eval()
+    else:
+        # Directory head-only con classifier.pt
+        cls_path = ckpt_dir / "classifier.pt"
+        if not cls_path.exists():
+            raise FileNotFoundError(f"classifier.pt non trovato in {ckpt_dir}. "
+                                    f"Se il checkpoint è LoRA, aggiungi --use_lora.")
+        print(f"[LOAD] Modalità head-only: carico classifier da {cls_path}")
+        state = torch.load(cls_path, map_location="cpu")
+        probe.classifier.load_state_dict(state, strict=True)
+        probe.eval()
 
     # Dataset di test e DataLoader (PIL → processor)
     test_dataset = DatasetFactory.create_dataset(
@@ -157,12 +159,16 @@ def main():
         collate_fn=collate_keep_pil
     )
 
-    # Inference loop: produce preds/gts in formato compatibile con Evaluator
+    # Inference loop: produce preds/gts per Evaluator
     preds, gts = [], []
-    with torch.no_grad():
+    use_amp = (device.type == "cuda")
+    probe.eval()
+
+    with torch.inference_mode():
         for images_list, targets_list in tqdm(test_loader, desc="Testing", unit="batch"):
-            # Passa direttamente la lista di PIL al probe; il processor farà il resto
-            logits = probe(images_list)
+            # PEFT “preferisce” kwargs; passiamo sempre images=...
+            with torch.autocast(device_type='cuda' if use_amp else 'cpu', dtype=torch.float16, enabled=use_amp):
+                logits = probe(images=images_list)
 
             if is_cls:
                 pred_idx = logits.argmax(dim=1).cpu().tolist()
@@ -184,10 +190,8 @@ def main():
                     gts.append(g)
 
     # Valutazione e salvataggio risultati
-    output_dir_rel = eval_subdir
-    Evaluator.evaluate(preds, gts, output_dir=output_dir_rel, dataset_name=args.dataset_name)
-    print(f"Valutazione completata. Risultati salvati in datasets_vlm/{output_dir_rel}")
-
+    Evaluator.evaluate(preds, gts, output_dir=eval_subdir, dataset_name=args.dataset_name)
+    print(f"Valutazione completata. Risultati salvati in {eval_subdir}")
 
 if __name__ == "__main__":
     main()
