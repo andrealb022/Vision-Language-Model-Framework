@@ -4,6 +4,8 @@ from sklearn.metrics import accuracy_score, confusion_matrix, mean_absolute_erro
 import matplotlib.pyplot as plt
 from .face_dataset import FaceDataset
 
+AGE_CLASS_NAMES = ["0-2","3-9","10-19","20-29","30-39","40-49","50-59","60-69","70+"]
+
 class Evaluator:
     """
     Classe statica per valutare le predizioni di modelli su diversi dataset.
@@ -11,15 +13,17 @@ class Evaluator:
     """
 
     @staticmethod
-    def evaluate(preds, gts, output_dir, dataset_name):
+    def evaluate(preds, gts, output_dir, dataset_name, age_mode: str = "auto"):
         """
         Metodo principale per valutare le predizioni in base al tipo di dataset.
 
         Args:
             preds (list): Lista di predizioni (dict per esempio).
             gts (list): Lista di ground truth corrispondenti (dict).
-            output_dir (str or Path): Directory dove salvare i risultati.
-            dataset_name (str): Nome del dataset ("MiviaPar" o uno tra quelli di FaceDataset).
+            output_dir (str or Path): Directory dove salvare i risultati (relativa al package evaluator).
+            dataset_name (str): "MiviaPar" oppure uno tra quelli di FaceDataset.
+            age_mode (str): "auto" | "classification" | "regression".
+                            - auto: decide in base ai valori (0..8 interi -> classificazione, altrimenti regressione).
         """
         output_dir = Path(__file__).parent.resolve() / output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -31,20 +35,13 @@ class Evaluator:
             Evaluator._evaluate_mivia_par(preds, gts, output_dir)
             print(f"[MIVIA PAR] Results saved in {output_dir}")
         elif dataset_name in FaceDataset.get_available_datasets():
-            Evaluator._evaluate_face_dataset(preds, gts, output_dir)
+            Evaluator._evaluate_face_dataset(preds, gts, output_dir, age_mode=age_mode)
             print(f"[FACE DATASET] Results saved in {output_dir}")
         else:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
 
     @staticmethod
     def _save_json(data, path):
-        """
-        Salva dati in formato JSON in un file.
-
-        Args:
-            data (Any): Dati serializzabili in JSON.
-            path (Path): Percorso del file di destinazione.
-        """
         try:
             with open(path, "w") as f:
                 json.dump(data, f, indent=4)
@@ -53,25 +50,15 @@ class Evaluator:
 
     @staticmethod
     def _plot_confusion_matrix(cm, labels, task, acc, output_path):
-        """
-        Genera e salva una confusion matrix.
-
-        Args:
-            cm (np.ndarray): Matrice di confusione.
-            labels (list): Etichette delle classi.
-            task (str): Nome del task (per titolo del grafico).
-            acc (float): Accuratezza del task.
-            output_path (Path): Percorso del file immagine.
-        """
         plt.figure(figsize=(6, 5))
         plt.imshow(cm, interpolation="nearest", cmap="Blues")
         plt.colorbar()
-        plt.xticks(ticks=range(len(labels)), labels=labels)
+        plt.xticks(ticks=range(len(labels)), labels=labels, rotation=45, ha="right")
         plt.yticks(ticks=range(len(labels)), labels=labels)
         plt.xlabel("Predicted")
         plt.ylabel("True")
         plt.title(f"{task.upper()} - Acc: {acc:.4f}")
-        thresh = cm.max() / 2.0
+        thresh = cm.max() / 2.0 if cm.size else 0.0
         for i in range(cm.shape[0]):
             for j in range(cm.shape[1]):
                 plt.text(j, i, str(cm[i, j]), ha="center", va="center",
@@ -82,15 +69,6 @@ class Evaluator:
 
     @staticmethod
     def _evaluate_mivia_par(preds, gts, output_dir):
-        """
-        Valuta le predizioni per il dataset MIVIA PAR.
-        Calcola accuratezza per ogni task e media, salva confusion matrix e metriche.
-
-        Args:
-            preds (list): Lista di predizioni (dict).
-            gts (list): Lista di ground truth (dict).
-            output_dir (Path): Directory di output.
-        """
         metrics = {}
         accuracies = []
         tasks = preds[0].keys() if preds else []
@@ -120,21 +98,35 @@ class Evaluator:
         Evaluator._save_json(metrics, output_dir / "metrics.json")
 
     @staticmethod
-    def _evaluate_face_dataset(preds, gts, output_dir):
+    def _infer_age_mode_from_values(y_true_age, y_pred_age):
+        """
+        Se tutti i valori validi sono interi tra 0..8 → classification, altrimenti regression.
+        """
+        vals = [v for v in (y_true_age + y_pred_age) if v is not None]
+        if not vals:
+            return "regression"  # fallback, ma non cambierà nulla se non ci sono età
+        try:
+            as_int = [int(v) for v in vals]
+        except (TypeError, ValueError):
+            return "regression"
+        if all((0 <= v <= 8) for v in as_int) and all(float(v).is_integer() for v in vals):
+            return "classification"
+        return "regression"
+
+    @staticmethod
+    def _evaluate_face_dataset(preds, gts, output_dir, age_mode: str = "auto"):
         """
         Valuta le predizioni per un dataset facciale.
-        Calcola accuratezza per gender, emotion, ethnicity e MAE per age.
-
-        Args:
-            preds (list): Lista di predizioni (dict).
-            gts (list): Lista di ground truth (dict).
-            output_dir (Path): Directory di output.
+        - Accuratezza + confusion matrix per gender, emotion, ethnicity.
+        - AGE:
+            * classification: accuratezza + confusion matrix sulle 9 classi
+            * regression: MAE
         """
         metrics = {}
         accuracies = []
         tasks_accuracy = ["gender", "ethnicity", "emotion"]
-        task_mae = "age"
 
+        # --- Task di classificazione standard ---
         for task in tasks_accuracy:
             y_true, y_pred = [], []
             for p, g in zip(preds, gts):
@@ -152,15 +144,46 @@ class Evaluator:
                 accuracies.append(acc)
                 Evaluator._plot_confusion_matrix(cm, labels, task, acc, output_dir / f"confusion_matrix_{task}.png")
 
-        # MAE per l'età
+        # --- AGE: classificazione o regressione ---
         y_true_age, y_pred_age = [], []
         for p, g in zip(preds, gts):
-            if task_mae in p and g.get(task_mae, -1) != -1:
-                y_true_age.append(g[task_mae])
-                y_pred_age.append(p[task_mae])
+            if "age" in p and g.get("age", -1) != -1:
+                y_true_age.append(g["age"])
+                y_pred_age.append(p["age"])
+
+        # Se non ci sono età, niente metrica età
         if y_true_age:
-            mae = mean_absolute_error(y_true_age, y_pred_age)
-            metrics[task_mae] = {"mae": mae}
+            if age_mode == "auto":
+                decided = Evaluator._infer_age_mode_from_values(y_true_age, y_pred_age)
+            else:
+                decided = age_mode.lower()
+                if decided not in {"classification", "regression"}:
+                    decided = "regression"
+
+            if decided == "classification":
+                # Indici 0..8
+                y_true_cls = [int(v) for v in y_true_age]
+                y_pred_cls = [int(v) for v in y_pred_age]
+                acc = accuracy_score(y_true_cls, y_pred_cls)
+                cm = confusion_matrix(y_true_cls, y_pred_cls, labels=list(range(9)))
+                metrics["age"] = {
+                    "mode": "classification",
+                    "accuracy": acc,
+                    "labels": AGE_CLASS_NAMES
+                }
+                accuracies.append(acc)
+                Evaluator._plot_confusion_matrix(
+                    cm, AGE_CLASS_NAMES, "age", acc, output_dir / "confusion_matrix_age.png"
+                )
+            else:
+                # Regressione: MAE
+                y_true_reg = [float(v) for v in y_true_age]
+                y_pred_reg = [float(v) for v in y_pred_age]
+                mae = mean_absolute_error(y_true_reg, y_pred_reg)
+                metrics["age"] = {
+                    "mode": "regression",
+                    "mae": mae
+                }
 
         metrics["average_accuracy"] = sum(accuracies) / len(accuracies) if accuracies else None
         Evaluator._save_json(metrics, output_dir / "metrics.json")

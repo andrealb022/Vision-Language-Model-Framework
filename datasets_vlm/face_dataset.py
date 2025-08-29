@@ -4,6 +4,27 @@ from .base_dataset import BaseDataset
 import random
 from tqdm import tqdm
 
+# =========================
+# CONFIGURAZIONE GLOBALE
+# =========================
+# True  -> Age come regressione (float)
+# False -> Age come classificazione (classe tra AGE_CLASSES)
+AGE_IS_REGRESSION = False
+
+# Classi d'età per la classificazione
+AGE_CLASSES = ["0-2","3-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70+"]
+
+def _age_float_to_class(age_val: float):
+    """Mappa un valore float d'età nell'indice di AGE_CLASSES."""
+    if age_val < 0:
+        return -1
+
+    bounds = [2, 9, 19, 29, 39, 49, 59, 69, float("inf")]
+    for idx, upper in enumerate(bounds):
+        if age_val <= upper:
+            return idx
+    return -1
+
 class FaceDataset(BaseDataset):
     """
     Dataset unificato per più dataset facciali (CelebA_HQ, FairFace, LFW, ecc.).
@@ -82,7 +103,7 @@ class FaceDataset(BaseDataset):
                 relative_path = Path(row["Path"].replace("\\", "/"))
 
                 # Rimuove il prefisso ridondante se presente
-                if relative_path.parts[0] == self.base_path.name:
+                if relative_path.parts and relative_path.parts[0] == self.base_path.name:
                     relative_path = Path(*relative_path.parts[1:])
 
                 # Cerca immagine con estensione valida
@@ -95,12 +116,38 @@ class FaceDataset(BaseDataset):
                 else:
                     raise FileNotFoundError(f"[Errore] Immagine non trovata: {relative_path} ({extensions})")
 
+                # Gender
+                gender = int(row["Gender"]) if pd.notna(row["Gender"]) else -1
+
+                # Age (regressione o classificazione)
+                if pd.notna(row["Age"]):
+                    try:
+                        age_val = float(row["Age"])
+                    except ValueError:
+                        age_val = -1.0
+                else:
+                    age_val = -1.0
+
+                if AGE_IS_REGRESSION:
+                    age_label = age_val
+                else:
+                    age_label = _age_float_to_class(age_val)
+
+                # Ethnicity
+                ethnicity = int(row["Ethnicity"]) if pd.notna(row["Ethnicity"]) else -1
+
+                # Emotion
+                emotion = int(row["Facial Emotion"]) if pd.notna(row["Facial Emotion"]) else -1
+
+                # Identity
+                identity = str(row["Identity"]) if pd.notna(row["Identity"]) else -1
+
                 labels = {
-                    "gender": int(row["Gender"]) if pd.notna(row["Gender"]) else -1,
-                    "age": int(row["Age"]) if pd.notna(row["Age"]) else -1,
-                    "ethnicity": int(row["Ethnicity"]) if pd.notna(row["Ethnicity"]) else -1,
-                    "emotion": int(row["Facial Emotion"]) if pd.notna(row["Facial Emotion"]) else -1,
-                    "identity": str(row["Identity"]) if pd.notna(row["Identity"]) else -1,
+                    "gender": gender,
+                    "age": age_label,
+                    "ethnicity": ethnicity,
+                    "emotion": emotion,
+                    "identity": identity,
                 }
 
                 samples.append({"image_path": image_path, "labels": labels})
@@ -121,7 +168,7 @@ class FaceDataset(BaseDataset):
             dict: Etichette standardizzate nel formato:
                 {
                     "gender": int (0=male, 1=female, -1=unknown),
-                    "age": float,
+                    "age": float (se regressione) OPPURE str (classe età) / -1 (se sconosciuta),
                     "ethnicity": int (0–3, -1=unknown),
                     "emotion": int (0–6, -1=unknown)
                 }
@@ -137,11 +184,17 @@ class FaceDataset(BaseDataset):
             # Gender
             gender = 1 if "female" in gender_str else 0 if "male" in gender_str else -1
 
-            # Age
+            # Age -> float di base
             try:
-                age = float(age_str)
+                age_val = float(age_str)
             except ValueError:
-                age = -1
+                age_val = -1.0
+
+            # Age -> applica schema scelto
+            if AGE_IS_REGRESSION:
+                age_label = age_val
+            else:
+                age_label = _age_float_to_class(age_val)
 
             # Ethnicity (gestione fuzzy + fallback)
             if "asian" in ethnicity_str and "caucasian" not in ethnicity_str:
@@ -168,7 +221,7 @@ class FaceDataset(BaseDataset):
 
             return {
                 "gender": gender,
-                "age": age,
+                "age": age_label,   # <-- ora dipende da AGE_IS_REGRESSION
                 "ethnicity": ethnicity,
                 "emotion": emotion,
             }
@@ -177,7 +230,7 @@ class FaceDataset(BaseDataset):
             print(f"[Errore] Parsing output fallito: {e}")
             return {
                 "gender": -1,
-                "age": -1,
+                "age": -1 if not AGE_IS_REGRESSION else -1.0,
                 "ethnicity": -1,
                 "emotion": -1,
             }
