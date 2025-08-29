@@ -51,17 +51,3 @@ class LinearProbe(nn.Module):
             feats = feats.to(target_dtype)
         logits = self.classifier(feats)         # [B, C]
         return logits
-
-    def get_lora_target_names(self, backbone_strategy):
-        """
-        Ritorna i nomi dei target LoRA dalla backbone e dalla head.
-        """
-        # (A) target dalla backbone
-        bk_rel = self.backbone.get_lora_target_names(backbone_strategy)   # es: ['vision_model.encoder.layers.23.self_attn.q_proj', ...]
-        bk_full = [f"backbone.{n}" for n in bk_rel]
-
-        # (B) target dalla testa: tutti i Linear sotto 'classifier'
-        head = [n for n, m in self.named_modules() if n.startswith("classifier.") and isinstance(m, nn.Linear)]
-        # (C) unisci
-        target_modules = sorted(set(bk_full + head))
-        return target_modules
