@@ -45,7 +45,7 @@ def collate_keep_pil(batch):
 def run_eval_one_dataset(args, backbone, device, dataset_name, ckpt_dir_base):
     # Output dir per Evaluator
     base = Path(project_root) if project_root else Path(".")
-    eval_dir = base / "eval" / f"{args.model_name}_{args.quantization}_{dataset_name}_{args.task.lower()}"
+    eval_dir = base / "eval" / f"{args.model_name}_{args.quantization}" / f"{args.task.lower()}" / f"{dataset_name}"
     eval_dir.mkdir(parents=True, exist_ok=True)
 
     # Head (sempre classificazione)
@@ -99,14 +99,14 @@ def parse_args():
     # Dataset args (test)
     parser.add_argument("--dataset_name", type=str, default="auto",
                         help="Nome dataset singolo oppure 'auto' per testare tutti i dataset del task")
-    parser.add_argument("--task", type=str, default="age",
+    parser.add_argument("--task", type=str, default="emotion",
                         help="gender | ethnicity | emotion | age")
     parser.add_argument("--base_path", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--num_workers", type=int, default=8)
 
     # Checkpoint directory (HEAD ONLY): contiene classifier.pt
-    parser.add_argument("--ckpt_dir", type=str, default="linear_probing/checkpoints/llava_fp32_auto_age_head",
+    parser.add_argument("--ckpt_dir", type=str, default="linear_probing/checkpoints/llava_fp32_auto_emotion_head",
                         help="Directory della head (deve contenere classifier.pt)")
     return parser.parse_args()
 

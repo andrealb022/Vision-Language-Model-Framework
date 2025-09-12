@@ -104,22 +104,6 @@ def targets_to_tensor(targets_list, task: str, device):
     y = torch.tensor(ys, dtype=torch.long, device=device)
     return y
 
-def compute_class_weights_from_loader(train_loader, task: str, num_classes: int, device):
-    """
-    Calcola pesi 'inverse frequency' (normalizzati) dal train_loader.
-    """
-    counts = np.zeros(num_classes, dtype=np.int64)
-    for images_list, targets_list in train_loader:
-        ys = [int(t.get("age" if task == "age" else task, -1)) for t in targets_list]
-        for y in ys:
-            if 0 <= y < num_classes:
-                counts[y] += 1
-
-    counts = np.maximum(counts, 1)              # evita divisioni per zero
-    inv = 1.0 / counts.astype(np.float64)       # inverse frequency
-    weights = inv * (num_classes / inv.sum())   # normalize=True (somma = num_classes)
-    return torch.tensor(weights, dtype=torch.float32, device=device)
-
 def compute_class_weights(loader, task):
     num_classes = get_num_classes_for_task(task)
     counts = np.zeros(num_classes, dtype=np.int64)
@@ -151,20 +135,20 @@ def parse_args():
               " - 'auto' per concatenare tutti i dataset che hanno il task scelto, "
               " - una lista separata da virgole (es. 'FairFace,RAF-DB').")
     )
-    parser.add_argument("--task", type=str, default="age",
+    parser.add_argument("--task", type=str, default="emotion",
                         help="gender | ethnicity | emotion | age")
     parser.add_argument("--base_path", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--num_workers", type=int, default=8)
 
     # Training args
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--patience", type=int, default=3)
+    parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
 
-    # Resume / Output
+    # Resume / Output (./linear_probing/checkpoints/llava_fp32_auto_age_head)
     parser.add_argument("--resume_from", type=str, default=None,
                         help="Percorso da cui riprendere: directory head (solo classifier)")
     parser.add_argument("--output_root", type=str, default=None,
@@ -182,8 +166,6 @@ def save_classifier_training_bundle(head_dir: Path, probe: nn.Module,
       - classifier.pt (solo pesi della head densa)
       - training_state.pth con optimizer/scheduler/scaler/epoch/best_val_loss/meta/args
     """
-    head_dir = Path(head_dir)
-    head_dir.mkdir(parents=True, exist_ok=True)
     torch.save(probe.classifier.state_dict(), head_dir / "classifier.pt")
     bundle = {
         "epoch": next_epoch,
@@ -208,13 +190,13 @@ def try_resume_from_classifier_dir(resume_path: Path, probe: nn.Module,
     cls_path = resume_path / "classifier.pt"
     if not cls_path.exists():
         raise RuntimeError("classifier.pt non trovato nella directory di resume.")
-    state = torch.load(cls_path, map_location="cpu")
+    state = torch.load(cls_path, map_location="cpu", weights_only=True)
     probe.classifier.load_state_dict(state, strict=True)
 
     bundle_path = resume_path / "training_state.pth"
     start_epoch, best_val_loss, meta = 0, float("inf"), {}
     if bundle_path.exists():
-        bundle = torch.load(bundle_path, map_location="cpu")
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=True)
         if optimizer is not None and bundle.get("optimizer_state") is not None:
             optimizer.load_state_dict(bundle["optimizer_state"])
         if scheduler is not None and bundle.get("scheduler_state") is not None:
@@ -246,6 +228,8 @@ def main():
     else:
         output_dir = Path("linear_probing") / "checkpoints"
     output_dir.mkdir(parents=True, exist_ok=True)
+    head_dir = Path((output_dir / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}_head").as_posix())
+    head_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Modello VLM & Backbone ---
     model_id = None
@@ -264,7 +248,7 @@ def main():
     transform = None
     dataset, used_dsets = build_dataset_for_task(args.task, base_path=args.base_path, train=True,
                                                  transform=transform, dataset_name=args.dataset_name)
-    print(f"[INFO] Dataset totali usati: {used_dsets} | dimensione complessiva: {len(dataset)}")
+    print(f"[INFO] Dataset totali usati per il task {task_lower}: {used_dsets} | dimensione complessiva: {len(dataset)}")
 
     # --- Split ---
     val_size = max(1, int(0.2 * len(dataset)))
@@ -378,14 +362,12 @@ def main():
                 "model_name": args.model_name,
                 "quantization": args.quantization,
                 "dataset_name": args.dataset_name,
-                "task": args.task,
-                "use_lora": False
+                "task": args.task
             }
 
-            head_dir = (output_dir / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}_head").as_posix()
-            save_classifier_training_bundle(Path(head_dir), probe, optimizer, scheduler, scaler,
+            save_classifier_training_bundle(head_dir, probe, optimizer, scheduler, scaler,
                                             next_epoch=epoch+1, best_val_loss=best_val_loss, meta=meta, args=args)
-            history["ckpt"] = head_dir
+            history["ckpt"] = str(head_dir)
             print(f"[SAVE] SOLO classifier + training bundle → {head_dir}")
         else:
             patience_left -= 1
@@ -394,12 +376,14 @@ def main():
                 break
 
         # Log progressivo
-        with open(output_dir / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}.train_log.json", "w") as f:
-            json.dump(history, f, indent=2)
+        with open(head_dir / "train_log.json", "w") as f:
+            json.dump(history, f, indent=2, default=str)
+
 
     print(f"Training completato. Best: {history['ckpt']}")
-    with open(output_dir / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}.train_log.json", "w") as f:
-        json.dump(history, f, indent=2)
+    with open(head_dir / "train_log.json", "w") as f:
+        json.dump(history, f, indent=2, default=str)
+
 
 if __name__ == "__main__":
     main()
