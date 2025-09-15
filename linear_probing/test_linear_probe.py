@@ -45,7 +45,7 @@ def collate_keep_pil(batch):
 def run_eval_one_dataset(args, backbone, device, dataset_name, ckpt_dir_base):
     # Output dir per Evaluator
     base = Path(project_root) if project_root else Path(".")
-    eval_dir = base / "eval" / f"{args.model_name}_{args.quantization}" / f"{args.task.lower()}" / f"{dataset_name}"
+    eval_dir = base / "linear_probing" / "eval" / f"{args.model_name}_{args.quantization}" / f"{args.task.lower()}" / f"{dataset_name}"
     eval_dir.mkdir(parents=True, exist_ok=True)
 
     # Head (sempre classificazione)
