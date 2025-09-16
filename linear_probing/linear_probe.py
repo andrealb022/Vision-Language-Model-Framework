@@ -42,6 +42,7 @@ class LinearProbe(nn.Module):
     def __init__(self, backbone: VisionBackbone, n_out_classes: int, freeze_backbone: bool = True, deeper_head: bool = False):
         super().__init__()
         self.backbone = backbone
+        self.freeze_backbone = freeze_backbone
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
@@ -61,9 +62,20 @@ class LinearProbe(nn.Module):
 
     def extract_features(self, images):
         """
-        Ritorna gli embeddings [B, D] del backbone (no_grad se freezato).
+        Ritorna l'embedding condivisa [B, D] del backbone.
         """
-        return self.backbone(images)
+        was_training = self.backbone.training
+        self.backbone.eval()  # per sicurezza con BN/Dropout interni al backbone
+
+        if self.freeze_backbone:
+            with torch.no_grad():
+                feats = self.backbone(images)
+        else:
+            feats = self.backbone(images)
+
+        if was_training:
+            self.backbone.train()
+        return feats
 
     def forward(self, images, **kwargs):
         """
