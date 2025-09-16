@@ -13,23 +13,51 @@ from pathlib import Path
 
 # Variabili
 DROPOUT_P = 0.3
+HIDDEN_RATIO = 4  # per le teste "deeper"
+
+def _make_head(in_dim: int, out_dim: int, dropout_p: float = DROPOUT_P) -> nn.Sequential:
+    # identica filosofia al LinearProbe: BN1d -> Dropout -> Linear
+    return nn.Sequential(
+        nn.BatchNorm1d(in_dim),
+        nn.Dropout(p=dropout_p),
+        nn.Linear(in_dim, out_dim)
+    )
+
+def _make_head_deeper(in_dim: int, out_dim: int, dropout_p: float = DROPOUT_P) -> nn.Sequential:
+    # variante MLP leggera: BN1d -> Dropout -> Linear -> GELU -> Dropout -> Linear
+    hidden = max(1, in_dim // HIDDEN_RATIO)
+    return nn.Sequential(
+        nn.BatchNorm1d(in_dim),
+        nn.Dropout(p=dropout_p),
+        nn.Linear(in_dim, hidden),
+        nn.GELU(),
+        nn.Dropout(p=dropout_p),
+        nn.Linear(hidden, out_dim)
+    )
 
 class LinearProbe(nn.Module):
     """
     Linear probing: backbone (freezato di default) + testa lineare.
     """
-    def __init__(self, backbone: VisionBackbone, n_out_classes: int, freeze_backbone: bool = True):
+    def __init__(self, backbone: VisionBackbone, n_out_classes: int, freeze_backbone: bool = True, deeper_head: bool = False):
         super().__init__()
         self.backbone = backbone
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
-
-        self.classifier = nn.Sequential(
-            nn.BatchNorm1d(self.backbone.output_dim),
-            nn.Dropout(p=DROPOUT_P),
-            nn.Linear(self.backbone.output_dim, n_out_classes)
-        )
+        
+        if deeper_head:
+            self.classifier = _make_head_deeper(
+                in_dim=self.backbone.out_dim,
+                out_dim=n_out_classes,
+                dropout_p=DROPOUT_P
+            )
+        else:
+            self.classifier = _make_head(
+            in_dim=self.backbone.out_dim,
+            out_dim=n_out_classes,
+            dropout_p=DROPOUT_P
+            )
 
     def extract_features(self, images):
         """

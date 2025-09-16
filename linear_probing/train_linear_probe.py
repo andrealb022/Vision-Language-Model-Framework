@@ -128,6 +128,7 @@ def parse_args():
                         choices=VLMModelFactory.get_available_models())
     parser.add_argument("--quantization", type=str, default="fp32",
                         choices=["4bit", "8bit", "fp16", "fp32"])
+    parser.add_argument("--deeper_head", type=bool, default=False)
 
     # Dataset args
     parser.add_argument("--dataset_name", type=str, default="auto", help=("Nome del dataset da usare. Può essere: "
@@ -136,7 +137,7 @@ def parse_args():
               " - una lista separata da virgole (es. 'FairFace,RAF-DB').")
     )
     parser.add_argument("--task", type=str, default="emotion",
-                        help="gender | ethnicity | emotion | age")
+                        help="gender | ethnicity | emotion | age")                    
     parser.add_argument("--base_path", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--num_workers", type=int, default=8)
@@ -228,7 +229,8 @@ def main():
     else:
         output_dir = Path("linear_probing") / "checkpoints"
     output_dir.mkdir(parents=True, exist_ok=True)
-    head_dir = Path((output_dir / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}_head").as_posix())
+    deeper = f"deeper" if args.deeper_head else "linear"
+    head_dir = Path((output_dir / f"{args.model_name}_{args.quantization}_{args.dataset_name}_{args.task}_head_{deeper}").as_posix())
     head_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Modello VLM & Backbone ---
@@ -242,7 +244,7 @@ def main():
     probe_out = get_num_classes_for_task(task_lower)
 
     # Backbone SEMPRE frozen
-    probe = LinearProbe(backbone=backbone, n_out_classes=probe_out, freeze_backbone=True).to(device)
+    probe = LinearProbe(backbone=backbone, n_out_classes=probe_out, freeze_backbone=True, deeper_head=args.deeper_head).to(device)
 
     # --- Dataset (auto-merge per task) ---
     transform = None
