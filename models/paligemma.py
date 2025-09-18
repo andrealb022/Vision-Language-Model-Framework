@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from huggingface_hub import login
 from transformers import PaliGemmaForConditionalGeneration
 from .base_model import VLMModel
-from .base_vision_backbone import VisionBackbone
+from .vision_backbone import VisionBackbone
 
 # -----------------------------------------------------------------------------
 # Autenticazione (opzionale) a Hugging Face tramite variabile d'ambiente HF_TOKEN.

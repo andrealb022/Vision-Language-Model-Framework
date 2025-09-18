@@ -2,7 +2,7 @@ import torch
 from PIL import Image
 from transformers import Blip2ForConditionalGeneration
 from .base_model import VLMModel
-from .base_vision_backbone import VisionBackbone
+from .vision_backbone import VisionBackbone
 
 class BLIP2OptModel(VLMModel):
     """
