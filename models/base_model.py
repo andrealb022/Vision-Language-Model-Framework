@@ -29,7 +29,6 @@ class VLMModel(ABC):
 
         # Caricamento del processor
         self.processor = AutoProcessor.from_pretrained(self.model_id, use_fast=True)
-        print(f"Processor per il modello {self.model_id} caricato con successo.")
         
         # Caricamento del modello
         self._load_model()

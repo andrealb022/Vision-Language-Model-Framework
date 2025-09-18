@@ -1,21 +1,15 @@
-# Percorso di progetto
 from dotenv import load_dotenv
 import os, sys
 load_dotenv()   # carica variabili da .env
 project_root = os.getenv("PYTHONPATH")  # aggiungi PYTHONPATH se definito
 if project_root and project_root not in sys.path:
     sys.path.append(project_root)
-
 import torch
 import torch.nn as nn
-from models.base_vision_backbone import VisionBackbone
+from models.vision_backbone import VisionBackbone
 from pathlib import Path
 
-# Variabili
-DROPOUT_P = 0.3
-HIDDEN_RATIO = 4  # per le teste "deeper"
-
-def _make_head(in_dim: int, out_dim: int, dropout_p: float = DROPOUT_P) -> nn.Sequential:
+def _make_head(in_dim: int, out_dim: int, dropout_p: float) -> nn.Sequential:
     # identica filosofia al LinearProbe: BN1d -> Dropout -> Linear
     return nn.Sequential(
         nn.BatchNorm1d(in_dim),
@@ -23,42 +17,34 @@ def _make_head(in_dim: int, out_dim: int, dropout_p: float = DROPOUT_P) -> nn.Se
         nn.Linear(in_dim, out_dim)
     )
 
-def _make_head_deeper(in_dim: int, out_dim: int, dropout_p: float = DROPOUT_P) -> nn.Sequential:
+def _make_head_deeper(in_dim: int, out_dim: int, hidden_dim: int, dropout_p: float) -> nn.Sequential:
     # variante MLP leggera: BN1d -> Dropout -> Linear -> GELU -> Dropout -> Linear
-    hidden = max(1, in_dim // HIDDEN_RATIO)
     return nn.Sequential(
         nn.BatchNorm1d(in_dim),
         nn.Dropout(p=dropout_p),
-        nn.Linear(in_dim, hidden),
+        nn.Linear(in_dim, hidden_dim),
         nn.GELU(),
         nn.Dropout(p=dropout_p),
-        nn.Linear(hidden, out_dim)
+        nn.Linear(hidden_dim, out_dim)
     )
 
 class LinearProbe(nn.Module):
     """
     Linear probing: backbone (freezato di default) + testa lineare.
     """
-    def __init__(self, backbone: VisionBackbone, n_out_classes: int, freeze_backbone: bool = True, deeper_head: bool = False):
+    def __init__(self, backbone: VisionBackbone, n_out_classes: int, freeze_backbone: bool = True, dropout_p: float = 0.3, 
+    deeper_head: bool = False, hidden_dim: int = 512):
         super().__init__()
         self.backbone = backbone
         self.freeze_backbone = freeze_backbone
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
-        
         if deeper_head:
-            self.classifier = _make_head_deeper(
-                in_dim=self.backbone.out_dim,
-                out_dim=n_out_classes,
-                dropout_p=DROPOUT_P
-            )
+            self.classifier = _make_head_deeper(in_dim=self.backbone.output_dim, out_dim=n_out_classes, 
+            hidden_dim=hidden_dim, dropout_p=dropout_p)
         else:
-            self.classifier = _make_head(
-            in_dim=self.backbone.out_dim,
-            out_dim=n_out_classes,
-            dropout_p=DROPOUT_P
-            )
+            self.classifier = _make_head(in_dim=self.backbone.output_dim, out_dim=n_out_classes, dropout_p=dropout_p)
 
     def extract_features(self, images):
         """
