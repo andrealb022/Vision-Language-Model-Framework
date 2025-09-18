@@ -1,0 +1,44 @@
+# Modello e setup
+model_name: llava            # es: llava, qwen, blip2...
+quantization: fp16           # 4bit | 8bit | fp16 | fp32
+
+# Dataset da usare per l'inferenza (su cui il prompt verra' applicato e testato)
+dataset_name: RAF-DB         # es: MiviaPar, VggFace2-Test, RAF-DB, ...
+
+# Limite token generati dal VLM
+max_tokens: 100
+
+dataset:
+  # Imposta un base path custom; metti null per usare i default interni
+  base_path: null
+  # Partizione (False = test)
+  train: false
+
+# Prompt selezionato in base al dataset_name:
+# - se dataset_name == "MiviaPar" → usa prompts.MiviaPar
+# - altrimenti prova una chiave col nome esatto del dataset
+# - altrimenti cade su prompts.face_dataset
+prompts:
+  MiviaPar: |
+    Analyze the person in this image and provide the following information in the exact format requested. Return your response as comma-separated values in this specific order:
+    Color Upper Clothes,Color Lower Clothes,Gender,Presence of bag,Presence of hat
+    Instructions:
+    - Color Upper Clothes: Choose from: black, white, gray, red, blue, green, yellow, orange, purple, pink, brown
+    - Color Lower Clothes: Choose from: black, white, gray, red, blue, green, yellow, orange, purple, pink, brown
+    - Gender: male or female
+    - Presence of bag: yes or no
+    - Presence of hat: yes or no
+    Example output format:
+    blue,black,male,yes,no
+    Important: Provide only the comma-separated values, no additional text or explanation.
+  face_dataset: |
+    Analyze the face in this image and provide the following information in the exact format requested. Return your response as comma-separated values in this specific order:
+    Gender,Age,Ethnicity,Facial Emotion
+    Instructions:
+    - Gender: male or female
+    - Age: Estimate age as a number (e.g., 25.0, 34.5)
+    - Ethnicity: Choose from: caucasian, african american, east asian, asian indian
+    - Facial Emotion: Choose from: anger, disgust, fear, happiness, sadness, surprise
+    Example output format:
+    male,28.5,east asian,happiness
+    Important: Provide only the comma-separated values, no additional text or explanation.
