@@ -4,27 +4,6 @@ from .base_dataset import BaseDataset
 import random
 from tqdm import tqdm
 
-# =========================
-# CONFIGURAZIONE GLOBALE
-# =========================
-# True  -> Age come regressione (float)
-# False -> Age come classificazione (classe tra AGE_CLASSES)
-AGE_IS_REGRESSION = False
-
-# Classi d'età per la classificazione
-AGE_CLASSES = ["0-2","3-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70+"]
-
-def _age_float_to_class(age_val: float):
-    """Mappa un valore float d'età nell'indice di AGE_CLASSES."""
-    if age_val < 0:
-        return -1
-
-    bounds = [2, 9, 19, 29, 39, 49, 59, 69, float("inf")]
-    for idx, upper in enumerate(bounds):
-        if age_val <= upper:
-            return idx
-    return -1
-
 class FaceDataset(BaseDataset):
     """
     Dataset unificato per più dataset facciali (CelebA_HQ, FairFace, LFW, ecc.).
@@ -34,8 +13,7 @@ class FaceDataset(BaseDataset):
 
     # Dataset supportati dalla factory
     SUPPORTED_DATASETS = [
-        "CelebA_HQ", "FairFace", "LFW", "MiviaGender",
-        "RAF-DB", "TestDataset", "UTKFace", "VggFace2-Test","VggFace2-Train"
+        "CelebA_HQ", "FairFace", "LFW", "RAF-DB", "TestDataset", "UTKFace", "VggFace2-Test","VggFace2-Train"
     ]
 
     # Mappatura nominale per etnie
@@ -57,8 +35,21 @@ class FaceDataset(BaseDataset):
         "anger": 5,
         "neutral": 6
     }
+    
+    # Mappatura per classi d'età (se self.age_is_regression = False)
+    AGE_LABELS = {
+        "0-2": 0,
+        "3-9": 1,
+        "10-19": 2,
+        "20-29": 3,
+        "30-39": 4,
+        "40-49": 5,
+        "50-59": 6,
+        "60-69": 7,
+        "70+": 8
+    }
 
-    def __init__(self, dataset_name: str, base_path: Path, train: bool, transform):
+    def __init__(self, dataset_name: str, base_path: Path, train: bool, transform, age_is_regression=False):
         """
         Inizializza il dataset facciale.
 
@@ -74,6 +65,7 @@ class FaceDataset(BaseDataset):
                 f"Supportati: {sorted(self.SUPPORTED_DATASETS)}"
             )
         else:
+            self.age_is_regression = age_is_regression
             super().__init__(dataset_name=dataset_name, base_path=base_path, train=train, transform=transform)
 
     @staticmethod
@@ -128,10 +120,10 @@ class FaceDataset(BaseDataset):
                 else:
                     age_val = -1.0
 
-                if AGE_IS_REGRESSION:
+                if self.age_is_regression:
                     age_label = age_val
                 else:
-                    age_label = _age_float_to_class(age_val)
+                    age_label = self._age_float_to_class(age_val)
 
                 # Ethnicity
                 ethnicity = int(row["Ethnicity"]) if pd.notna(row["Ethnicity"]) else -1
@@ -191,10 +183,10 @@ class FaceDataset(BaseDataset):
                 age_val = -1.0
 
             # Age -> applica schema scelto
-            if AGE_IS_REGRESSION:
+            if self.age_is_regression:
                 age_label = age_val
             else:
-                age_label = _age_float_to_class(age_val)
+                age_label = self._age_float_to_class(age_val)
 
             # Ethnicity (gestione fuzzy + fallback)
             if "asian" in ethnicity_str and "caucasian" not in ethnicity_str:
@@ -221,7 +213,7 @@ class FaceDataset(BaseDataset):
 
             return {
                 "gender": gender,
-                "age": age_label,   # <-- ora dipende da AGE_IS_REGRESSION
+                "age": age_label,   # <-- ora dipende da self.age_is_regression
                 "ethnicity": ethnicity,
                 "emotion": emotion,
             }
@@ -230,7 +222,19 @@ class FaceDataset(BaseDataset):
             print(f"[Errore] Parsing output fallito: {e}")
             return {
                 "gender": -1,
-                "age": -1 if not AGE_IS_REGRESSION else -1.0,
+                "age": -1 if not self.age_is_regression else -1.0,
                 "ethnicity": -1,
                 "emotion": -1,
             }
+    
+    def _age_float_to_class(self, age_val: float):
+        """Mappa un valore float d'età nell'indice di una classe."""
+        # Classi d'età per la classificazione
+        if age_val < 0:
+            return -1
+
+        bounds = [2, 9, 19, 29, 39, 49, 59, 69, float("inf")]
+        for idx, upper in enumerate(bounds):
+            if age_val <= upper:
+                return idx
+        return -1

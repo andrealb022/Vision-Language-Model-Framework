@@ -1,98 +1,87 @@
 # Percorso di progetto
 from dotenv import load_dotenv
-import os, sys
+import os, sys, json
+from pathlib import Path
 load_dotenv()   # carica variabili da .env
 project_root = os.getenv("PYTHONPATH")  # aggiungi PYTHONPATH se definito
 if project_root and project_root not in sys.path:
     sys.path.append(project_root)
+
 import argparse
 import torch
-from pathlib import Path
 from models.model_factory import VLMModelFactory
 from datasets_vlm.dataset_factory import DatasetFactory
-from datasets_vlm.evaluate import Evaluator
-import os
+from datasets_vlm.evaluate_dataset import Evaluator
 from tqdm import tqdm
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Simple inference script")
-    # Model arguments
-    parser.add_argument("--model_name", type=str, default="llava", choices=VLMModelFactory.get_available_models())
-    parser.add_argument("--quantization", type=str, default="fp16", choices=["4bit", "8bit", "fp16", "fp32"])
-    # Dataset arguments
-    parser.add_argument("--dataset_name", type=str, default="VggFace2-Test", choices=DatasetFactory.get_available_datasets())
-    parser.add_argument("--train", type=bool, default=False, help="True -> dataset_train, False -> dataset_test")
-    return parser.parse_args()
+def load_config(config_path: str) -> dict:
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    return cfg
 
 def main():
-    args = parse_args()
+    # Solo il percorso del file di config come argomento
+    parser = argparse.ArgumentParser(description="Simple inference script (config-driven)")
+    parser.add_argument("--config", type=str, default="inference/config.json", help="Path al file di configurazione JSON")
+    args = parser.parse_args()
+    cfg = load_config(os.path.join(project_root, args.config) if project_root else args.config)
+
+    # Lettura parametri dalla config
+    model_name   = cfg["model_name"]
+    quantization = cfg["quantization"]
+    dataset_name = cfg["dataset_name"]
+    max_tokens   = int(cfg.get("max_tokens", 100))
+
+    output_dir = os.path.join(project_root, f"inference/eval/{model_name}/{quantization}/{dataset_name}")
+    os.makedirs(output_dir, exist_ok=True)
+    print("Output directory:", output_dir)
+
+    # Dispositivo
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
-    # Imposta il path di output relativo al project_root
-    if project_root:
-        output_dir = os.path.join(project_root, "eval", args.model_name, args.dataset_name, args.quantization)
-    else:
-        print("PYTHONPATH non definito. Utilizzo 'output' relativo alla directory corrente.")
-        output_dir = os.path.join("eval", args.model_name, args.dataset_name, args.quantization)
 
-    # Setup del modello
-    model_id = None  # Placeholder for model ID if needed
-    model = VLMModelFactory.create_model(args.model_name, model_id, device, args.quantization)
-    max_tokens = 100
-    
-    # Setup del dataset
-    base_path = None # Placeholder for base path if needed (altrimenti utilizza il base_path di default)
-    transform = None # Placeholder for any transformations
-    dataset = DatasetFactory.create_dataset(args.dataset_name, base_path=base_path, train=args.train, transform=transform)
+    # Setup modello
+    model_id = None
+    model = VLMModelFactory.create_model(model_name, model_id, device, quantization)
 
-    # Esegui inferenza
-    if args.dataset_name == "MiviaPar":
-        prompt = (
-            "Analyze the person in this image and provide the following information in the exact format requested. "
-            "Return your response as comma-separated values in this specific order:\n"
-            "Color Upper Clothes,Color Lower Clothes,Gender,Presence of bag,Presence of hat\n"
-            "Instructions:\n"
-            "- Color Upper Clothes: Choose from: black, white, gray, red, blue, green, yellow, orange, purple, pink, brown\n"
-            "- Color Lower Clothes: Choose from: black, white, gray, red, blue, green, yellow, orange, purple, pink, brown\n"
-            "- Gender: male or female\n"
-            "- Presence of bag: yes or no\n"
-            "- Presence of hat: yes or no\n"
-            "Example output format:\n"
-            "blue,black,male,yes,no\n"
-            "Important: Provide only the comma-separated values, no additional text or explanation."
-        )
+    # Setup dataset
+    ds_cfg = cfg.get("dataset", {})
+    base_path = ds_cfg.get("base_path", None)
+    train     = bool(ds_cfg.get("train", False))
+    transform = None  # se vuoi, aggiungi gestione trasformazioni nella config
+    dataset = DatasetFactory.create_dataset(dataset_name, base_path=base_path, train=train, transform=transform)
+
+    # Scegli il prompt dalla config
+    prompts = cfg.get("prompts", {})
+    if dataset_name in prompts:
+        prompt = prompts[dataset_name]
+    elif dataset_name == "MiviaPar" and "MiviaPar" in prompts:
+        prompt = prompts["MiviaPar"]
     else:
-        prompt = (
-            "Analyze the face in this image and provide the following information in the exact format requested. "
-            "Return your response as comma-separated values in this specific order:\n"
-            "Gender,Age,Ethnicity,Facial Emotion\n"
-            "Instructions:\n"
-            "- Gender: male or female\n"
-            "- Age: Estimate age as a number (e.g., 25.0, 34.5)\n"
-            "- Ethnicity: Choose from: caucasian, african american, east asian, asian indian\n"
-            "- Facial Emotion: Choose from: anger, disgust, fear, happiness, sadness, surprise\n"
-            "Example output format:\n"
-            "male,28.5,east asian,happiness\n"
-            "Important: Provide only the comma-separated values, no additional text or explanation."
-        )
+        prompt = prompts.get("face_dataset", "")
+
+    if not prompt:
+        raise ValueError("Nessun prompt trovato in config (chiave 'prompts').")
+
+    # Salva una copia della config usata per riproducibilità
+    with open(os.path.join(output_dir, "used_config.json"), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
 
     # Inizio inferenza
-    preds = []
-    gts = []
-    print(f"Running inference on dataset: {args.dataset_name}")
+    preds, gts = [], []
+    print(f"Running inference on dataset: {dataset_name}")
     try:
         for image, label in tqdm(dataset, desc="Processing images", unit="image"):
             output = model.generate_text(image, prompt, max_tokens=max_tokens)
             parsed_output = dataset.get_labels_from_text_output(output)
             preds.append(parsed_output)
             gts.append(label)
-            #print(f"Output: {output}, Parsed: {parsed_output}, GT: {label}")
-    
+            # print(f"Output: {output}, Parsed: {parsed_output}, GT: {label}")
     except KeyboardInterrupt:
         print("\nInterrotto dall'utente. Eseguo valutazione con i dati raccolti finora...")
 
     if preds and gts:
-        Evaluator.evaluate(preds, gts, output_dir, dataset_name=args.dataset_name)
+        Evaluator.evaluate(preds, gts, output_dir, dataset_name=dataset_name)
     else:
         print("Nessun dato valutabile.")
 
