@@ -1,93 +1,76 @@
 import pandas as pd
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 from .base_dataset import BaseDataset
 import random
 from tqdm import tqdm
 
+
 class FaceDataset(BaseDataset):
     """
-    Dataset unificato per più dataset facciali (CelebA_HQ, FairFace, LFW, ecc.).
-    Supporta le etichette standardizzate: gender, age, ethnicity, emotion, identity.
-    Compatibile con la factory e strutture standardizzate su disco.
+    Dataset unificato per più dataset facciali (CelebA_HQ, FairFace, LFW, RAF-DB, UTKFace, VggFace2-Train/Test, ...).
+    Etichette standardizzate: gender, age, ethnicity, emotion, identity.
+    Struttura su disco: <base>/<dataset>/{train|val|test}/(images/, labels.csv)
     """
 
-    # Dataset supportati dalla factory
     SUPPORTED_DATASETS = [
-        "CelebA_HQ", "FairFace", "LFW", "RAF-DB", "TestDataset", "UTKFace", "VggFace2-Test","VggFace2-Train"
+        "CelebA_HQ", "FairFace", "LFW", "RAF-DB", "TestDataset", "UTKFace",
+        "VggFace2-Test", "VggFace2-Train"
     ]
 
-    # Mappatura nominale per etnie
+    # Mapping nominale per etnie (usa solo queste 4 classi)
     ETHNICITY_LABELS = {
         "caucasian latin": 0,
         "caucasian": 0,
         "african american": 1,
         "east asian": 2,
-        "asian indian": 3
+        "asian indian": 3,
     }
 
-    # Mappatura per emozioni facciali
     EMOTION_LABELS = {
-        "surprise": 0,
-        "fear": 1,
-        "disgust": 2,
-        "happiness": 3,
-        "sadness": 4,
-        "anger": 5,
-        "neutral": 6
+        "surprise": 0, "fear": 1, "disgust": 2, "happiness": 3,
+        "sadness": 4, "anger": 5, "neutral": 6,
     }
-    
-    # Mappatura per classi d'età (se self.age_is_regression = False)
+
     AGE_LABELS = {
-        "0-2": 0,
-        "3-9": 1,
-        "10-19": 2,
-        "20-29": 3,
-        "30-39": 4,
-        "40-49": 5,
-        "50-59": 6,
-        "60-69": 7,
-        "70+": 8
+        "0-2": 0, "3-9": 1, "10-19": 2, "20-29": 3, "30-39": 4,
+        "40-49": 5, "50-59": 6, "60-69": 7, "70+": 8,
     }
 
-    def __init__(self, dataset_name: str, base_path: Path, train: bool, transform, age_is_regression=False):
+    def __init__(self, dataset_name: str, split: str = "train", base_path = None, transform=None, age_is_regression: bool = False):
         """
-        Inizializza il dataset facciale.
-
         Args:
-            dataset_name (str): Nome del dataset (usato come sottocartella).
-            base_path (Path, optional): Percorso base. Default = ~/datasets_with_standard_labels/
-            train (bool): Se True usa la partizione 'train/', altrimenti 'test/'.
-            transform (callable, optional): Trasformazioni da applicare all'immagine (es. torchvision).
+            dataset_name: nome del dataset (sottocartella).
+            split: 'train' | 'val' | 'test'.
+            base_path: radice dei dataset; se None usa default della BaseDataset.
+            transform: trasformazioni immagine.
+            age_is_regression: True → l'età è regressione (float); False → classificazione (classi 0..8).
         """
         if dataset_name not in self.SUPPORTED_DATASETS:
             raise ValueError(
-                f"[Errore] Dataset '{dataset_name}' non supportato. "
-                f"Supportati: {sorted(self.SUPPORTED_DATASETS)}"
+                f"Dataset '{dataset_name}' non supportato. Supportati: {sorted(self.SUPPORTED_DATASETS)}"
             )
-        else:
-            self.age_is_regression = age_is_regression
-            super().__init__(dataset_name=dataset_name, base_path=base_path, train=train, transform=transform)
+        self.age_is_regression = age_is_regression
+        super().__init__(dataset_name=dataset_name, split=split, base_path=base_path, transform=transform)
 
     @staticmethod
-    def get_available_datasets():
-        """
-        Restituisce la lista dei dataset supportati dalla classe.
-
-        Returns:
-            list: Nomi dei dataset.
-        """
+    def get_available_datasets() -> List[str]:
+        """Ritorna la lista dei dataset supportati."""
         return FaceDataset.SUPPORTED_DATASETS
 
-    def _load_labels(self):
+    # ------------------------- Caricamento etichette -------------------------
+    def _load_labels(self) -> List[Dict[str, Any]]:
         """
-        Carica le etichette da un CSV nel formato standard:
-        Path, Gender, Age, Ethnicity, Facial Emotion, Identity
-
-        Returns:
-            list of dict: ciascun elemento ha chiavi 'image_path' e 'labels'.
+        Legge labels.csv (colonne attese: Path, Gender, Age, Ethnicity, Facial Emotion, Identity)
+        e costruisce una lista di dict: {'image_path': Path, 'labels': {...}} per lo split corrente.
+        - 'Path' può essere relativo (consigliato) o assoluto; se relativo è risolto rispetto a images/.
+        - Se l'estensione nel CSV è assente, si provano [.jpg, .jpeg, .png].
         """
         df = pd.read_csv(self.label_file)
-        samples = []
+        samples: List[Dict[str, Any]] = []
+
+        # Normalizza nomi colonne (tollerante a maiuscole/spazi)
+        df.columns = [c.strip() for c in df.columns]
 
         for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Loading labels"):
             try:
@@ -108,31 +91,22 @@ class FaceDataset(BaseDataset):
                 else:
                     raise FileNotFoundError(f"[Errore] Immagine non trovata: {relative_path} ({extensions})")
 
+                # ------- Parsing campi -------
                 # Gender
-                gender = int(row["Gender"]) if pd.notna(row["Gender"]) else -1
+                gender = self._to_int_safe(row.get("Gender"), default=-1)
 
-                # Age (regressione o classificazione)
-                if pd.notna(row["Age"]):
-                    try:
-                        age_val = float(row["Age"])
-                    except ValueError:
-                        age_val = -1.0
-                else:
-                    age_val = -1.0
-
-                if self.age_is_regression:
-                    age_label = age_val
-                else:
-                    age_label = self._age_float_to_class(age_val)
+                # Age → float base
+                age_val = self._to_float_safe(row.get("Age"), default=-1.0)
+                age_label = age_val if self.age_is_regression else self._age_float_to_class(age_val)
 
                 # Ethnicity
-                ethnicity = int(row["Ethnicity"]) if pd.notna(row["Ethnicity"]) else -1
+                ethnicity = self._to_int_safe(row.get("Ethnicity"), default=-1)
 
                 # Emotion
-                emotion = int(row["Facial Emotion"]) if pd.notna(row["Facial Emotion"]) else -1
+                emotion = self._to_int_safe(row.get("Facial Emotion"), default=-1)
 
-                # Identity
-                identity = str(row["Identity"]) if pd.notna(row["Identity"]) else -1
+                # Identity (stringa; -1 se NaN)
+                identity = str(row.get("Identity")).strip() if pd.notna(row.get("Identity")) else "-1"
 
                 labels = {
                     "gender": gender,
@@ -141,54 +115,35 @@ class FaceDataset(BaseDataset):
                     "emotion": emotion,
                     "identity": identity,
                 }
-
                 samples.append({"image_path": image_path, "labels": labels})
+
             except Exception as e:
-                print(f"[Errore] Riga {idx + 2}: parsing fallito - {e}")
+                print(f"[WARN] Riga CSV {idx + 2}: salto il campione → {e}")
                 continue
 
         return samples
 
-    def get_labels_from_text_output(self, output):
+    # ------------------------- Parsing output VLM -------------------------
+    def get_labels_from_text_output(self, output: str) -> Dict[str, Any]:
         """
-        Estrae le etichette da una stringa generata da un VLM.
-
-        Esempio atteso:
-            "Male, 27.5, Asian Indian, Happiness"
-
-        Returns:
-            dict: Etichette standardizzate nel formato:
-                {
-                    "gender": int (0=male, 1=female, -1=unknown),
-                    "age": float (se regressione) OPPURE str (classe età) / -1 (se sconosciuta),
-                    "ethnicity": int (0–3, -1=unknown),
-                    "emotion": int (0–6, -1=unknown)
-                }
+        Converte una stringa del VLM in etichette standardizzate.
+        Formato atteso (tollerante a spazi/maiuscole): "Male, 27.5, Asian Indian, Happiness"
         """
         try:
-            parts = [x.strip().lower() for x in output.split(",")]
-
+            parts = [x.strip().lower() for x in str(output).split(",")]
             if len(parts) < 4:
-                raise ValueError(f"[Errore] Output incompleto (attesi 4 campi): '{output}'")
+                raise ValueError(f"Output incompleto (attesi 4 campi): '{output}'")
 
-            gender_str, age_str, ethnicity_str, emotion_str = parts
+            gender_str, age_str, ethnicity_str, emotion_str = parts[:4]
 
             # Gender
             gender = 1 if "female" in gender_str else 0 if "male" in gender_str else -1
 
-            # Age -> float di base
-            try:
-                age_val = float(age_str)
-            except ValueError:
-                age_val = -1.0
+            # Age
+            age_val = self._to_float_safe(age_str, default=-1.0)
+            age_label = age_val if self.age_is_regression else self._age_float_to_class(age_val)
 
-            # Age -> applica schema scelto
-            if self.age_is_regression:
-                age_label = age_val
-            else:
-                age_label = self._age_float_to_class(age_val)
-
-            # Ethnicity (gestione fuzzy + fallback)
+            # Ethnicity (matching fuzzy + fallback)
             if "asian" in ethnicity_str and "caucasian" not in ethnicity_str:
                 if "indian" in ethnicity_str:
                     ethnicity = self.ETHNICITY_LABELS.get("asian indian", -1)
@@ -197,7 +152,7 @@ class FaceDataset(BaseDataset):
                 else:
                     ethnicity = random.choice([
                         self.ETHNICITY_LABELS["east asian"],
-                        self.ETHNICITY_LABELS["asian indian"]
+                        self.ETHNICITY_LABELS["asian indian"],
                     ])
             else:
                 ethnicity = next(
@@ -206,33 +161,37 @@ class FaceDataset(BaseDataset):
                 )
 
             # Emotion
-            emotion = next(
-                (v for k, v in self.EMOTION_LABELS.items() if k in emotion_str),
-                -1
-            )
+            emotion = next((v for k, v in self.EMOTION_LABELS.items() if k in emotion_str), -1)
 
-            return {
-                "gender": gender,
-                "age": age_label,   # <-- ora dipende da self.age_is_regression
-                "ethnicity": ethnicity,
-                "emotion": emotion,
-            }
-
+            return {"gender": gender, "age": age_label, "ethnicity": ethnicity, "emotion": emotion}
         except Exception as e:
-            print(f"[Errore] Parsing output fallito: {e}")
+            print(f"[WARN] Parsing output VLM fallito: {e}")
             return {
                 "gender": -1,
-                "age": -1 if not self.age_is_regression else -1.0,
+                "age": (-1.0 if self.age_is_regression else -1),
                 "ethnicity": -1,
                 "emotion": -1,
             }
-    
-    def _age_float_to_class(self, age_val: float):
-        """Mappa un valore float d'età nell'indice di una classe."""
-        # Classi d'età per la classificazione
+
+    # ------------------------------- Helper -------------------------------
+    @staticmethod
+    def _to_int_safe(v: Any, default: int = -1) -> int:
+        try:
+            return int(v) if pd.notna(v) else default
+        except Exception:
+            return default
+
+    @staticmethod
+    def _to_float_safe(v: Any, default: float = -1.0) -> float:
+        try:
+            return float(v) if pd.notna(v) else default
+        except Exception:
+            return default
+
+    def _age_float_to_class(self, age_val: float) -> int:
+        """Mappa un'età float alla classe 0..8; -1 se sconosciuta/negativa."""
         if age_val < 0:
             return -1
-
         bounds = [2, 9, 19, 29, 39, 49, 59, 69, float("inf")]
         for idx, upper in enumerate(bounds):
             if age_val <= upper:

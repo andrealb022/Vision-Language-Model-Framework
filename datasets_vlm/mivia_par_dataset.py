@@ -1,25 +1,31 @@
+from typing import Any, Dict, List, Optional
+from pathlib import Path
 import pandas as pd
-from .base_dataset import BaseDataset
-import random
 from tqdm import tqdm
+from .base_dataset import BaseDataset
+
 
 class MiviaParDataset(BaseDataset):
     """
     Dataset per il task MIVIA Person Attribute Recognition (PAR).
 
-    Gestisce immagini annotate con attributi come colore degli abiti, genere,
-    presenza di borsa e cappello. Le etichette vengono caricate da un file CSV senza intestazione.
+    Etichette di output (dizionarie per campione):
+      - upper : colore parte superiore (int)   — mapping in COLOR_LABELS, -1 se sconosciuto
+      - lower : colore parte inferiore (int)   — mapping in COLOR_LABELS, -1 se sconosciuto
+      - gender: 0=male, 1=female, -1=unknown
+      - bag   : 0/1, -1=unknown
+      - hat   : 0/1, -1=unknown
 
-    Attributi di output:
-        - upper (colore della parte superiore)
-        - lower (colore della parte inferiore)
-        - gender (0=male, 1=female)
-        - bag (0/1)
-        - hat (0/1)
+    Struttura su disco (per split in {'train','val','test'}):
+      <base>/<dataset_name>/<split>/{images/, labels.csv}
+
+    Il CSV NON ha intestazione. Colonne attese:
+      [path, upper, lower, gender, bag, hat]
     """
 
     SUPPORTED_DATASETS = ["MiviaPar"]
 
+    # Colori (classi 1..11). -1 verrà usato come "unknown".
     COLOR_LABELS = {
         "black": 1, "dark": 1,
         "blue": 2,
@@ -31,127 +37,134 @@ class MiviaParDataset(BaseDataset):
         "purple": 8,
         "red": 9,
         "white": 10,
-        "yellow": 11
+        "yellow": 11,
     }
 
-    def __init__(self, dataset_name: str, base_path, train: bool, transform):
-        """
-        Inizializza il dataset MIVIA PAR.
-        
-        Args:
-            dataset_name (str): Nome del dataset (usato come sottocartella).
-            base_path (Path, optional): Percorso base. Default = ~/datasets_with_standard_labels/
-            train (bool): Se True usa la partizione 'train/', altrimenti 'test/'.
-            transform (callable, optional): Trasformazioni da applicare all'immagine (es. torchvision).
-        """
-        super().__init__(dataset_name=dataset_name, base_path=base_path, train=train, transform=transform)
+    def __init__(
+        self,
+        dataset_name: str,
+        split: str = "train",
+        base_path: Optional[Path] = None,
+        transform=None,
+    ):
+        if dataset_name not in self.SUPPORTED_DATASETS:
+            raise ValueError(f"Dataset '{dataset_name}' non supportato. Ammessi: {self.SUPPORTED_DATASETS}")
+        super().__init__(dataset_name=dataset_name, split=split, base_path=base_path, transform=transform)
 
     @staticmethod
-    def get_available_datasets():
-        """
-        Restituisce i nomi dei dataset supportati dalla classe.
-
-        Returns:
-            list: Nomi dei dataset (per ora solo "MiviaPar").
-        """
+    def get_available_datasets() -> List[str]:
+        """Elenco dei dataset supportati."""
         return MiviaParDataset.SUPPORTED_DATASETS
 
-    def _load_labels(self):
+    # ------------------------- Caricamento etichette -------------------------
+    def _load_labels(self) -> List[Dict[str, Any]]:
         """
-        Carica le etichette dal file CSV, che non ha intestazione.
-        Colonne attese: [path, upper, lower, gender, bag, hat]
-
-        Returns:
-            list of dict: Ogni elemento contiene:
-                - image_path: Path dell'immagine
-                - labels: dizionario con etichette numeriche
+        Legge labels.csv (senza header) e costruisce:
+          [{'image_path': Path, 'labels': {...}}, ...]
+        Path nel CSV può essere relativo a images/ (consigliato).
         """
         column_names = ["path", "upper", "lower", "gender", "bag", "hat"]
         df = pd.read_csv(self.label_file, header=None, names=column_names)
+        df.columns = [c.strip() for c in df.columns]
 
-        samples = []
-        for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Loading labels"):
+        samples: List[Dict[str, Any]] = []
+        for i, row in tqdm(df.iterrows(), total=df.shape[0], desc=f"[{self.name}/{self.split}] Loading labels"):
             try:
-                image_path = self.image_folder / row["path"]
+                rel = str(row["path"]).strip().replace("\\", "/")
+                image_path = self._resolve_image_path(rel)
+
                 labels = {
-                    "upper": int(row["upper"]),
-                    "lower": int(row["lower"]),
-                    "gender": int(row["gender"]),
-                    "bag": int(row["bag"]),
-                    "hat": int(row["hat"]),
+                    "upper": self._color_to_id(row.get("upper")),
+                    "lower": self._color_to_id(row.get("lower")),
+                    "gender": self._to_int_safe(row.get("gender"), default=-1),
+                    "bag": self._to_bin_safe(row.get("bag")),
+                    "hat": self._to_bin_safe(row.get("hat")),
                 }
                 samples.append({"image_path": image_path, "labels": labels})
             except Exception as e:
-                print(f"[Errore] Parsing riga {idx + 1}: {e}")
+                print(f"[WARN] Riga CSV {i + 1}: salto → {e}")
                 continue
 
+        if not samples:
+            raise RuntimeError(f"Nessun campione valido in {self.label_file}")
         return samples
 
-    def get_labels_from_text_output(self, output):
+    # ------------------------- Parsing output VLM -------------------------
+    def get_labels_from_text_output(self, output: str) -> Dict[str, int]:
         """
-        Converte una stringa generata da un VLM in etichette numeriche.
-
-        Formato atteso:
-            "Black, Black, Male, No, Yes"
-
-        Returns:
-            dict: Etichette nel formato MIVIA PAR standard:
-                {
-                    "upper": int (colore),
-                    "lower": int (colore),
-                    "gender": int (0=male, 1=female, -1=unknown),
-                    "bag": int (0/1),
-                    "hat": int (0/1)
-                }
+        Converte una stringa VLM in etichette numeriche.
+        Formato atteso (case-insensitive, separato da virgole):
+          "Black, Black, Male, No, Yes"
         """
         try:
-            parts = [x.strip().lower() for x in output.split(",")]
-
+            parts = [p.strip().lower() for p in str(output).split(",")]
             if len(parts) < 5:
-                raise ValueError(f"[Errore] Output incompleto, attesi 5 valori: {output}")
+                raise ValueError(f"Output incompleto (attesi 5 campi): {output}")
 
-            # Parsers locali
-            def parse_color(color_str):
-                for name, idx in self.COLOR_LABELS.items():
-                    if name in color_str:
-                        return idx
-                return random.choice(list(self.COLOR_LABELS.values()))  # fallback random
+            upper = self._match_color(parts[0])
+            lower = self._match_color(parts[1])
+            gender = 1 if "female" in parts[2] else 0 if "male" in parts[2] else -1
+            bag = self._parse_yesno(parts[3])
+            hat = self._parse_yesno(parts[4])
 
-            def parse_binary(value):
-                if "yes" in value:
-                    return 1
-                if "no" in value:
-                    return 0
-                return -1
-
-            def parse_gender(value):
-                if "female" in value:
-                    return 1
-                if "male" in value:
-                    return 0
-                return -1
-
-            # Parsing effettivo
-            upper = parse_color(parts[0])
-            lower = parse_color(parts[1])
-            gender = parse_gender(parts[2])
-            bag = parse_binary(parts[3])
-            hat = parse_binary(parts[4])
-
-            return {
-                "upper": upper,
-                "lower": lower,
-                "gender": gender,
-                "bag": bag,
-                "hat": hat
-            }
-
+            return {"upper": upper, "lower": lower, "gender": gender, "bag": bag, "hat": hat}
         except Exception as e:
-            print(f"[Errore] Parsing output fallito: {e}")
-            return {
-                "upper": -1,
-                "lower": -1,
-                "gender": -1,
-                "bag": -1,
-                "hat": -1
-            }
+            print(f"[WARN] Parsing output VLM fallito: {e}")
+            return {"upper": -1, "lower": -1, "gender": -1, "bag": -1, "hat": -1}
+
+    # ------------------------------- Helper -------------------------------
+    def _resolve_image_path(self, rel_or_abs: str) -> Path:
+        """Risolvi path immagine: se relativo → rispetto a images/; valida l'esistenza."""
+        p = Path(rel_or_abs)
+        if p.is_absolute():
+            if not p.exists():
+                raise FileNotFoundError(f"Immagine non trovata: {p}")
+            return p
+        # relativo: può includere sottocartelle
+        candidate = self.image_folder / p
+        if not candidate.exists():
+            raise FileNotFoundError(f"Immagine non trovata (relativa): {candidate}")
+        return candidate
+
+    @staticmethod
+    def _to_int_safe(v, default: int = -1) -> int:
+        try:
+            return int(v)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _to_bin_safe(v) -> int:
+        """Converte in 0/1/-1. Accetta 0/1, '0'/'1', 'yes'/'no' (case-insensitive)."""
+        s = str(v).strip().lower()
+        if s in {"1", "yes", "y", "true"}:
+            return 1
+        if s in {"0", "no", "n", "false"}:
+            return 0
+        try:
+            return 1 if int(v) == 1 else 0 if int(v) == 0 else -1
+        except Exception:
+            return -1
+
+    def _color_to_id(self, v) -> int:
+        """
+        Converte un colore (stringa o intero) nella classe colore:
+          - se già intero → ritorna int(v)
+          - se stringa → matching lessicale
+          - altrimenti → -1
+        """
+        # già numerico?
+        try:
+            return int(v)
+        except Exception:
+            pass
+        # stringa: match lessicale
+        s = str(v).strip().lower()
+        return self._match_color(s)
+
+    def _match_color(self, s: str) -> int:
+        """Trova l'id colore dalla stringa; -1 se nessun match."""
+        for name, idx in self.COLOR_LABELS.items():
+            if name in s:
+                return idx
+        return -1
