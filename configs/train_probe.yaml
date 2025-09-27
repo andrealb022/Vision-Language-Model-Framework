@@ -1,0 +1,47 @@
+# Scegli il profilo di default da usare (puoi sovrascrivere da CLI: --profile single|multi)
+profile: single
+# ------------------------- Sezione comune (condivisa) -------------------------
+common:
+  model:
+    name: llava            # oppure il tuo alias nel ModelFactory
+    quantization: fp32
+    freeze_backbone: true  # nel multi sotto lo sovrascriviamo a false
+    dropout_p: 0.3
+    deeper_head: false     # true => "deeper", false => "linear"
+    hidden_dim: 512
+  data:
+    base_path: null        # path radice dei dataset (se serve)
+    batch_size: 128
+    num_workers: 8
+  train:
+    epochs: 100
+    lr: 0.0001
+    weight_decay: 0.0001
+    patience: 6
+    amp: true
+    eval_every: 1
+    scheduler:
+      type: cosine_wr
+      T_0: 10
+      T_mult: 2
+# ------------------------- Profilo SINGLE-TASK -------------------------
+single:
+  task: age             # il task singolo da addestrare (gender|age|emotion|ethnicity)
+
+# ------------------------- Profilo MULTI-TASK -------------------------
+multi:
+  tasks: [gender, age, emotion]
+
+  model:
+    freeze_backbone: false
+
+  train:
+    # Abilita uncertainty weighting tra i task (opzionale)
+    uncertainty_weighting:
+      enabled: true
+      init_log_var: 0.0
+    # Esempio: sampler con forza maggiore nel multi, mettere {} per disabilitare
+    sampler: {}
+      #type: weighted
+      #beta: 1.0
+      #replacement: true

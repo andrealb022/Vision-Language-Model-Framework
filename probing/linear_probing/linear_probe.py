@@ -77,3 +77,13 @@ class LinearProbe(nn.Module):
             feats = feats.to(target_dtype)
         logits = self.classifier(feats)         # [B, C]
         return logits
+
+    @torch.no_grad()
+    def predict(self, images):
+        """
+        Ritorna le predizioni argmax per ogni task.
+        """
+        self.eval()
+        logits = self.forward(images)           # [B, C]
+        preds = torch.argmax(logits, dim=-1)    # [B]
+        return preds

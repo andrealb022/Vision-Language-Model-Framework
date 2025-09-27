@@ -1,8 +1,0 @@
-data:
-  base_path: null    # oppure "/path/to/dataset"
-  batch_size: 128
-  num_workers: 8
-
-eval:
-  dataset_name: auto           # "auto" = testa tutti i dataset compatibili col task; oppure uno specifico (es. "RAF-DB")
-  ckpt_from: linear_probing/checkpoints/llava_fp32_auto_emotion_deeper   # dir che contiene classifier.pt e head_config.yaml

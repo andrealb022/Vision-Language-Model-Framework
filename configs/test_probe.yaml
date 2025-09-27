@@ -1,0 +1,13 @@
+profile: single
+common:
+  data: { base_path: null, batch_size: 128, num_workers: 8 }
+
+single:
+  eval:
+    ckpt_from: probing/linear_probing/checkpoints/llava_fp32_age_linear
+    dataset_name: auto
+
+multi:
+  eval:
+    ckpt_from: probing/multitask_probing/checkpoints/llava_fp32_gender-age-ethnicity_linear_e2e_ws_beta1.0_uw
+    dataset_name: auto
