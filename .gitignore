@@ -1,8 +1,7 @@
 __pycache__/
-eval/
 face_detector/
 .env
 log.txt
-linear_probing/checkpoints/
-linear_probing/features/
+probing/linear_probing/checkpoints/
+probing/linear_probing/features/
 LoRA/
