@@ -11,13 +11,8 @@ max_tokens: 100
 dataset:
   # Imposta un base path custom; metti null per usare i default interni
   base_path: null
-  # Partizione (False = test)
-  train: false
 
 # Prompt selezionato in base al dataset_name:
-# - se dataset_name == "MiviaPar" → usa prompts.MiviaPar
-# - altrimenti prova una chiave col nome esatto del dataset
-# - altrimenti cade su prompts.face_dataset
 prompts:
   MiviaPar: |
     Analyze the person in this image and provide the following information in the exact format requested. Return your response as comma-separated values in this specific order:

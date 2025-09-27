@@ -1,0 +1,17 @@
+train:
+  gender:    ["CelebA_HQ", "FairFace", "RAF-DB", "VggFace2-Train"]
+  ethnicity: ["FairFace"]
+  emotion:   ["RAF-DB"]
+  age:       ["VggFace2-Train", "FairFace"]
+
+val:
+  gender:    ["CelebA_HQ", "FairFace", "RAF-DB", "VggFace2-Train"]
+  ethnicity: ["FairFace"]
+  emotion:   ["RAF-DB"]
+  age:       ["VggFace2-Train", "FairFace"]
+
+test:
+  gender:    ["CelebA_HQ", "FairFace", "RAF-DB", "VggFace2-Test", "LFW", "UTKFace"]
+  ethnicity: ["FairFace"]
+  emotion:   ["RAF-DB"]
+  age:       ["VggFace2-Test", "FairFace", "UTKFace"]

@@ -1,25 +1,48 @@
-from typing import Iterable, List, Dict, Type
+import os
+from pathlib import Path
+from typing import Iterable, List, Dict, Type, Optional
 from torch.utils.data import ConcatDataset
+import numpy as np
+import yaml
 from .mivia_par_dataset import MiviaParDataset
 from .face_dataset import FaceDataset
-import numpy as np
 
-def aggregate_counts_from_datasets(ds, task: str, num_classes: int) -> np.ndarray | None:
-    """Somma i count (train/class_counts.json) su tutti i sotto-dataset."""
-    agg = np.zeros(num_classes, dtype=np.int64)
+# ------------------------- Counts utils -------------------------
+def aggregate_counts_from_datasets(
+    ds,
+    task: str,
+    num_classes: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    """
+    Somma i conteggi di classe per un task su tutti i sotto-dataset di `ds`.
+    Nessun default: se non trova nulla → None. Se num_classes è dato, pad/tronca.
+    """
+    agg: Optional[np.ndarray] = None
 
     def add_counts(one_ds):
         nonlocal agg
-        if hasattr(one_ds, "get_train_class_counts"):
-            lst = one_ds.get_train_class_counts(task)
-            if lst is None:
-                return
-            arr = np.array(lst, dtype=np.int64)
-            if arr.size < num_classes:
-                tmp = np.zeros(num_classes, dtype=np.int64); tmp[:arr.size] = arr; arr = tmp
-            elif arr.size > num_classes:
-                arr = arr[:num_classes]
-            agg += arr
+        if not hasattr(one_ds, "get_train_class_counts"):
+            return
+        raw = one_ds.get_train_class_counts(task)
+        if raw is None:
+            return
+        arr = np.asarray(raw, dtype=np.int64)
+        if arr.ndim != 1:
+            return
+
+        if agg is None:
+            agg = np.zeros_like(arr, dtype=np.int64)
+
+        if arr.size > agg.size:
+            tmp = np.zeros(arr.size, dtype=np.int64)
+            tmp[:agg.size] = agg
+            agg = tmp
+        elif arr.size < agg.size:
+            tmp = np.zeros(agg.size, dtype=np.int64)
+            tmp[:arr.size] = arr
+            arr = tmp
+
+        agg += arr
 
     if isinstance(ds, ConcatDataset):
         for sub in ds.datasets:
@@ -27,43 +50,137 @@ def aggregate_counts_from_datasets(ds, task: str, num_classes: int) -> np.ndarra
     else:
         add_counts(ds)
 
-    return None if agg.sum() == 0 else agg
+    if agg is None:
+        return None
 
+    if isinstance(num_classes, int) and num_classes > 0:
+        if agg.size < num_classes:
+            tmp = np.zeros(num_classes, dtype=np.int64)
+            tmp[:agg.size] = agg
+            agg = tmp
+        elif agg.size > num_classes:
+            agg = agg[:num_classes]
+
+    return None if int(agg.sum()) == 0 else agg
+
+
+# ------------------------- Factory -------------------------
 class DatasetFactory:
     """
-    Factory statica per istanziare dataset (estendono BaseDataset) a partire dal nome.
-
-    - Mantiene un registro nome_dataset -> classe_dataset
-    - Espone:
-        * create_dataset(name, *, split, base_path, transform, **kwargs)
-        * create_task_dataset(tasks, *, split, base_path, transform, **kwargs)
+    Factory per istanziare dataset concreti dai nomi simbolici e per creare
+    ConcatDataset in base alla mappa task->datasets caricata **solo** da YAML.
+    Nessun default in codice.
     """
+    # Mappa caricata da YAML (obbligatoria)
+    _task_datasets: Optional[Dict[str, Dict[str, List[str]]]] = None
 
+    # Alias retro-compat (riempiti dal YAML)
+    TASK_TO_DATASETS_TRAIN: Dict[str, List[str]] = {}
+    TASK_TO_DATASETS_VAL:   Dict[str, List[str]] = {}
+    TASK_TO_DATASETS_TEST:  Dict[str, List[str]] = {}
+
+    # Classi note da registrare (estendibile)
     _dataset_registry: Dict[str, Type] = {}
-
-    # Classi dataset da registrare (estendibile)
     _registered_dataset_classes = [MiviaParDataset, FaceDataset]
 
-    # Task → datasets consigliati (nomi come in get_available_datasets delle classi)
-    TASK_TO_DATASETS_TRAIN: Dict[str, List[str]] = {
-        "gender":    ["CelebA_HQ", "FairFace", "RAF-DB", "VggFace2-Train"],
-        "ethnicity": ["FairFace"],
-        "emotion":   ["RAF-DB"],
-        "age":       ["VggFace2-Train", "FairFace"],
-    }
-    TASK_TO_DATASETS_TEST: Dict[str, List[str]] = {
-        "gender":    ["CelebA_HQ", "FairFace", "RAF-DB", "VggFace2-Test", "LFW", "UTKFace"],
-        "ethnicity": ["FairFace"],
-        "emotion":   ["RAF-DB"],
-        "age":       ["VggFace2-Test", "FairFace", "UTKFace"],
-    }
-    # Popola il registro interrogando le classi
-    for dataset_cls in _registered_dataset_classes:
-        if hasattr(dataset_cls, "get_available_datasets"):
-            for name in dataset_cls.get_available_datasets():
-                _dataset_registry[name] = dataset_cls
+    # ---------------- Registration ----------------
+    @classmethod
+    def register_dataset_class(cls, dataset_cls: Type) -> None:
+        if not hasattr(dataset_cls, "get_available_datasets"):
+            raise ValueError(f"{dataset_cls.__name__} non espone get_available_datasets()")
+        for name in dataset_cls.get_available_datasets():
+            if name in cls._dataset_registry:
+                prev = cls._dataset_registry[name]
+                raise ValueError(
+                    f"Dataset '{name}' già registrato da {prev.__name__}. "
+                    f"Tentativo di doppia registrazione da {dataset_cls.__name__}."
+                )
+            cls._dataset_registry[name] = dataset_cls
 
-    # ----------------------------- API -----------------------------
+    # ---------------- YAML loader (obbligatorio) ----------------
+    @classmethod
+    def _yaml_path(cls) -> Path:
+        """
+        Path fisso richiesto: configs/task_datasets.yaml
+        (relativo alla root del progetto). Se PYTHONPATH è settato,
+        usalo come root di progetto.
+        """
+        project_root = os.getenv("PYTHONPATH") or "."
+        return Path(project_root) / "configs" / "task_datasets.yaml"
+
+    @classmethod
+    def load_task_map(cls, *, force: bool = False) -> None:
+        """
+        Carica la mappa task->datasets da configs/task_datasets.yaml.
+        Nessun fallback: se il file non esiste o non è valido, solleva errore.
+        Richiede che gli split usati (train/val/test) siano presenti.
+        """
+        if cls._task_datasets is not None and not force:
+            return
+
+        path = cls._yaml_path()
+        if not path.exists():
+            raise FileNotFoundError(
+                f"File YAML per task/datasets non trovato: {path}. "
+                f"Crea configs/task_datasets.yaml."
+            )
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        if not isinstance(data, dict):
+            raise ValueError(f"Formato YAML non valido in {path}: atteso dict radice.")
+
+        # Normalizza e valida
+        task_datasets: Dict[str, Dict[str, List[str]]] = {}
+        for split, mapping in data.items():
+            if split not in ("train", "val", "test"):
+                raise ValueError(f"Split non valido '{split}' in {path}. Ammessi: train, val, test.")
+            if not isinstance(mapping, dict):
+                raise ValueError(f"Sezione '{split}' deve essere una mappa task -> [datasets].")
+            task_map_norm: Dict[str, List[str]] = {}
+            for task, lst in mapping.items():
+                if not isinstance(lst, list) or not all(isinstance(x, str) for x in lst):
+                    raise ValueError(f"tasks['{split}']['{task}'] deve essere una lista di stringhe.")
+                # deduplica preservando ordine
+                seen = set(); ordered = []
+                for name in lst:
+                    if name not in seen:
+                        seen.add(name); ordered.append(name)
+                task_map_norm[str(task).lower()] = ordered
+            task_datasets[split] = task_map_norm
+
+        # Richiedi almeno train e test se verranno usati (nessun default)
+        cls._task_datasets = task_datasets
+
+        # Alias retro-compat (se mancano, lasciali vuoti: nessun default)
+        cls.TASK_TO_DATASETS_TRAIN = task_datasets.get("train", {})
+        cls.TASK_TO_DATASETS_VAL   = task_datasets.get("val",   {})
+        cls.TASK_TO_DATASETS_TEST  = task_datasets.get("test",  {})
+
+    # ---------------- Helpers interni ----------------
+    @classmethod
+    def _ensure_loaded(cls) -> None:
+        if cls._task_datasets is None:
+            cls.load_task_map()
+
+    @classmethod
+    def _task_map_for_split(cls, split: str) -> Dict[str, List[str]]:
+        cls._ensure_loaded()
+        s = split.lower().strip()
+        if s not in cls._task_datasets:
+            raise ValueError(
+                f"Split '{split}' non definito in configs/task_datasets.yaml. "
+                f"Aggiungilo esplicitamente (nessun default)."
+            )
+        return cls._task_datasets[s]
+
+    # ----------------------------- API pubblica -----------------------------
+    @staticmethod
+    def get_available_datasets() -> List[str]:
+        """Nomi dei dataset registrati nella factory."""
+        return list(DatasetFactory._dataset_registry.keys())
+
     @staticmethod
     def create_dataset(
         dataset_name: str,
@@ -72,25 +189,12 @@ class DatasetFactory:
         transform=None,
         **kwargs,
     ):
-        """
-        Istanzia un dataset per uno split specifico.
-
-        Args:
-            dataset_name: nome simbolico (es. "MiviaPar", "RAF-DB", "FairFace").
-            split: 'train' | 'val' | 'test'.
-            base_path: radice del dataset su disco.
-            transform: trasformazioni immagine.
-            **kwargs: argomenti aggiuntivi passati al costruttore della classe (es. age_is_regression).
-
-        Returns:
-            BaseDataset (istanza concreta della classe registrata).
-        """
+        """Istanzia un dataset concreto per lo split dato."""
         if dataset_name not in DatasetFactory._dataset_registry:
             available = DatasetFactory.get_available_datasets()
             raise ValueError(
                 f"Dataset '{dataset_name}' non registrato. Disponibili: {sorted(available)}"
             )
-
         dataset_class = DatasetFactory._dataset_registry[dataset_name]
         return dataset_class(
             dataset_name=dataset_name,
@@ -101,68 +205,66 @@ class DatasetFactory:
         )
 
     @staticmethod
-    def get_available_datasets() -> List[str]:
-        """Ritorna i nomi dei dataset registrati nella factory."""
-        return list(DatasetFactory._dataset_registry.keys())
-
-    @staticmethod
     def create_task_dataset(
         tasks: Iterable[str],
         split: str = "train",
         base_path=None,
         transform=None,
-        num_classes: Dict[str, int] = {},
+        num_classes: Optional[Dict[str, int]] = None,
         **kwargs,
-    ) -> tuple[ConcatDataset, dict[str, np.ndarray | None]]:
+    ) -> tuple[ConcatDataset, Dict[str, Optional[np.ndarray]]]:
         """
-        Crea un ConcatDataset che unisce (senza duplicati) i dataset suggeriti dai task richiesti,
-        e ritorna anche i counts aggregati per ciascun task.
+        Crea un ConcatDataset unendo (senza duplicati) i dataset suggeriti per i `tasks`
+        nello `split` richiesto (train/val/test). La mappa proviene **solo** da YAML.
         """
         tasks = [t.lower().strip() for t in tasks]
-        valid = set(DatasetFactory.TASK_TO_DATASETS_TRAIN.keys())
+        task_map = DatasetFactory._task_map_for_split(split)
+
+        valid = set(task_map.keys())
         unknown = sorted(set(tasks) - valid)
         if unknown:
-            raise ValueError(f"Task non supportati: {unknown}. Task validi: {sorted(valid)}")
+            raise ValueError(
+                f"Task non supportati per lo split '{split}': {unknown}. "
+                f"Definisci i task in configs/task_datasets.yaml."
+            )
 
-        selected_names: list[str] = []
+        selected_names: List[str] = []
         seen = set()
-        for t, ds_names in DatasetFactory.TASK_TO_DATASETS_TRAIN.items():
-            if t in tasks:
-                for name in ds_names:
-                    if name not in seen:
-                        seen.add(name)
-                        selected_names.append(name)
+        for t in tasks:
+            for name in task_map[t]:
+                if name not in seen:
+                    seen.add(name)
+                    selected_names.append(name)
 
         if not selected_names:
-            raise ValueError(f"Nessun dataset selezionato dai task: {tasks}")
+            raise ValueError(f"Nessun dataset selezionato per tasks={tasks} nello split '{split}'")
 
-        print(f"[Info] Task {tasks} → datasets: {selected_names}")
+        print(f"[INFO] split={split} | tasks={tasks} → datasets: {selected_names}")
 
         instantiated = []
         for name in selected_names:
             if name not in DatasetFactory._dataset_registry:
+                available = DatasetFactory.get_available_datasets()
                 raise ValueError(
-                    f"Il dataset '{name}' (richiesto da task {tasks}) non è registrato nella factory."
+                    f"Il dataset '{name}' non è registrato nella factory. "
+                    f"Disponibili: {sorted(available)}"
                 )
             ds = DatasetFactory.create_dataset(
-                name,
-                split=split,
-                base_path=base_path,
-                transform=transform,
-                **kwargs,
+                name, split=split, base_path=base_path, transform=transform, **kwargs
             )
             instantiated.append(ds)
 
         concat_ds = ConcatDataset(instantiated)
 
-        # calcola i counts per ogni task richiesto
-        counts_per_task = {
-            t: aggregate_counts_from_datasets(concat_ds, t, num_classes.get(t, 0)) for t in tasks
-        }
+        # Aggrega counts
+        num_classes = num_classes or {}
+        counts_per_task: Dict[str, Optional[np.ndarray]] = {}
+        for t in tasks:
+            k = num_classes.get(t, None)
+            counts_per_task[t] = aggregate_counts_from_datasets(concat_ds, t, num_classes=k)
+
         return concat_ds, counts_per_task
 
-# Esempio d'uso
-if __name__ == "__main__":
-    print("Dataset disponibili:", sorted(DatasetFactory.get_available_datasets()))
-    ds = DatasetFactory.create_dataset("RAF-DB", split="train")
-    ds_multi = DatasetFactory.create_task_dataset(["gender", "age"], split="train")
+for _cls in DatasetFactory._registered_dataset_classes:
+    DatasetFactory.register_dataset_class(_cls)
+DatasetFactory._ensure_loaded()
