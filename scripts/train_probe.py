@@ -49,10 +49,9 @@ def make_run_name(cfg: dict, trainer_name: str) -> str:
 
     if trainer_name == "multi":
         tasks = [t.lower() for t in cfg["tasks"]]
-        beta = float(cfg["train"].get("oversample_beta", 1.0))
         uw_cfg = (cfg["train"].get("uncertainty_weighting") or {})
         uw_flag = "_uw" if bool(uw_cfg.get("enabled", False)) else ""
-        return f"{model_name}_{quantization}_{'-'.join(tasks)}_{head_tag}_e2e_ws_beta{beta}{uw_flag}"
+        return f"{model_name}_{quantization}_{'-'.join(tasks)}_{head_tag}{uw_flag}"
     else:
         task = str(cfg.get("task", "task")).lower()
         return f"{model_name}_{quantization}_{task}_{head_tag}"
