@@ -153,7 +153,7 @@ class MultiTaskTrainer(BaseTrainer):
 
         # --- Loss per task (masked) ---
         self.criterions = {
-            t: nn.CrossEntropyLoss(weight=self.class_weights[t], ignore_index=-1).to(self.device)
+            t: nn.CrossEntropyLoss(weight=self.class_weights[t]).to(self.device)
             for t in self.tasks
         }
 
@@ -173,11 +173,19 @@ class MultiTaskTrainer(BaseTrainer):
         images_list, targets_list = batch
         y = targets_to_tensors(targets_list, self.tasks, device=self.device)
         out = self.model(images_list)
-        logits = out["logits"]  # dict task -> [B, C]
+        logits = out["logits"]  # dict: task -> [B, C]
 
         losses = {}
         for t in self.tasks:
-            loss_t = self.criterions[t](logits[t], y[t])  # ignore_index=-1 nella CE gestisce il masking
+            target = y[t]                 # [B] con -1 per missing
+            logit  = logits[t]            # [B, C]
+            mask   = (target != -1)
+            if mask.any():
+                # calcolo su soli esempi validi (masked loss)
+                loss_t = self.criterions[t](logit[mask], target[mask])
+            else:
+                # nessun valido ⇒ loss 0 ma con gradiente definito
+                loss_t = torch.zeros((), device=self.device, requires_grad=True)
             losses[t] = loss_t
         return losses
 

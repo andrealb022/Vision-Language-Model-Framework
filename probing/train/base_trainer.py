@@ -199,20 +199,23 @@ class BaseTrainer:
 
     # ----- helpers -----
     def reduce_losses(self, loss_dict: dict) -> torch.Tensor:
-        """Default: somma delle loss (sovrascrivibile dalle sottoclassi)."""
-        return sum(loss_dict.values())
+        """Somma NaN-safe delle loss (sovrascrivibile dalle sottoclassi)."""
+        vals = [v for v in loss_dict.values() if torch.isfinite(v)]
+        if len(vals) == 0:
+            # nessuna loss valida -> 0 con grad
+            return torch.zeros((), device=self.device, requires_grad=True)
+        return sum(vals)
 
     def _init_agg(self):
         return {"sum": {}, "n": {}}
 
     def _accumulate(self, running, loss_dict, batch):
-        # Assume batch[1] è targets_list come nel collate_keep_pil (se features mode, le sottoclassi sovrascrivono compute_losses)
         targets_list = None
         if isinstance(batch, (list, tuple)) and len(batch) > 1:
             targets_list = batch[1]
 
         for k, v in loss_dict.items():
-            # conteggia solo esempi validi (y!=-1) se abbiamo targets_list
+            # quanti esempi validi (y!=-1) per questo task nel batch?
             n = 1
             if targets_list is not None:
                 try:
@@ -220,8 +223,14 @@ class BaseTrainer:
                     n = int(sum(1 for y in ys if y is not None and int(y) != -1))
                 except Exception:
                     n = len(targets_list)
-            running["sum"][k] = running["sum"].get(k, 0.0) + float(v.detach().item()) * max(1, n)
-            running["n"][k]   = running["n"].get(k, 0) + max(1, n)
+
+            val = float(v.detach().item())
+            # skip se non c'è alcun valido o se la loss non è finita
+            if (n <= 0) or (not np.isfinite(val)):
+                continue
+
+            running["sum"][k] = running["sum"].get(k, 0.0) + val * n
+            running["n"][k] = running["n"].get(k, 0) + n
 
     def _epoch_log(self, split: str, running) -> float:
         keys = sorted(running["sum"].keys())
