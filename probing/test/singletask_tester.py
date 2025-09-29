@@ -5,7 +5,7 @@ import torch
 from probing.train.utils import get_num_classes_for_task
 from models.model_factory import VLMModelFactory
 from datasets_vlm.dataset_factory import DatasetFactory
-from probing.linear_probing.linear_probe import LinearProbe
+from probing.models.linear_probe import LinearProbe
 from probing.test.base_tester import BaseTester
 
 class SingleTaskTester(BaseTester):

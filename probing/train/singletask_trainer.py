@@ -14,7 +14,7 @@ from probing.train.utils import (
 )
 from models.model_factory import VLMModelFactory
 from datasets_vlm.dataset_factory import DatasetFactory
-from probing.linear_probing.linear_probe import LinearProbe
+from probing.models.linear_probe import LinearProbe
 from tqdm import tqdm
 
 
@@ -58,7 +58,7 @@ class SingleTaskTrainer(BaseTrainer):
 
         # Se congelata ma con k>0, sblocca solo gli ultimi k layer
         if freeze_flag and unfreeze_k > 0:
-            probe.backbone.unfreeze_last_k_layers(
+            probe.unfreeze_last_backbone_k_layers(
                 k=unfreeze_k, parts=unfreeze_parts, include_embeddings=include_embeddings
             )
 
