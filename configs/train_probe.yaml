@@ -17,15 +17,15 @@ common:
 
   data:
     base_path: null
-    batch_size: 128
+    batch_size: 512
     num_workers: 8
 
   train:
-    epochs: 100
+    epochs: 50
     lr: 0.0001                # LR teste di classificazione
     backbone_lr: 0.0001       # LR backbone (può essere uguale a lr)
     weight_decay: 0.0001
-    patience: 6
+    patience: 4
     amp: true
     eval_every: 2
     scheduler:
@@ -43,7 +43,7 @@ single:
 
 #------------------- Configurazioni profilo multi-task -------------------
 multi:
-  tasks: [gender, age, emotion]
+  tasks: [age, gender, emotion]
   model:
     backbone:
       freeze: true             # true = backbone congelata

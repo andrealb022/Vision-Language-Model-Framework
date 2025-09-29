@@ -3,5 +3,6 @@ face_detector/
 .env
 log.txt
 probing/linear_probing/checkpoints/
+probing/multitask_probing/checkpoints/
 probing/linear_probing/features/
 LoRA/
