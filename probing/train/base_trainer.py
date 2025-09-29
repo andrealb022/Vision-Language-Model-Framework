@@ -142,7 +142,13 @@ class BaseTrainer:
 
     def train_one_epoch(self, epoch: int, epochs: int) -> float:
         running = self._init_agg()
-        for i, batch in enumerate(tqdm(self.train_loader, desc=f"Train {epoch+1}/{epochs}", unit="batch")):
+        progress_bar = tqdm(
+            self.train_loader,
+            desc=f"Train {epoch+1}/{epochs}",
+            unit="batch"
+        )
+
+        for i, batch in enumerate(progress_bar):
             self.optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device_type=("cuda" if self.device.type=="cuda" else "cpu"),
@@ -162,6 +168,20 @@ class BaseTrainer:
                 self.scheduler.step(epoch + i / max(1, len(self.train_loader)))
 
             self._accumulate(running, loss_dict, batch)
+            # calcola loss media corrente (totale)
+            total_mean = sum(running["sum"].values()) / max(1, sum(running["n"].values()))
+
+            # Loss medie per singolo task
+            per_task_means = {
+                k: running["sum"][k] / max(1, running["n"][k])
+                for k in running["sum"]
+            }
+
+            # aggiorna barra tqdm
+            progress_bar.set_postfix({
+                "total": f"{total_mean:.4f}",
+                **{k: f"{v:.4f}" for k, v in per_task_means.items()}
+            })
 
         monitor = self._epoch_log("train", running)
         return monitor
