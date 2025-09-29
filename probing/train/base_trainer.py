@@ -36,21 +36,28 @@ class BaseTrainer:
         self.train_loader, self.val_loader = self.build_dataloaders()
 
         # optimizer & scheduler
-        params = [p for p in self.model.parameters() if p.requires_grad]
-        self.optimizer = optim.AdamW(
-            params,
-            lr=float(tcfg.get("lr", 1e-4)),
-            weight_decay=float(tcfg.get("weight_decay", 1e-4)),
-        )
-        scfg = tcfg.get("scheduler", {"type":"cosine_wr", "T_0": 10, "T_mult": 2})
-        self.scheduler = (
-            CosineAnnealingWarmRestarts(
-                self.optimizer,
-                T_0=int(scfg.get("T_0", 10)),
-                T_mult=int(scfg.get("T_mult", 2))
+        self.optimizer = None
+        self.scheduler = None
+        self.post_build()
+
+        # optimizer & scheduler (fallback se non impostati nel post_build)
+        if self.optimizer is None:
+            params = [p for p in self.model.parameters() if p.requires_grad]
+            self.optimizer = optim.AdamW(
+                params,
+                lr=float(tcfg.get("lr", 1e-4)),
+                weight_decay=float(tcfg.get("weight_decay", 1e-4)),
             )
-            if (scfg or {}).get("type","cosine_wr")=="cosine_wr" else None
-        )
+        if self.scheduler is None:
+            scfg = tcfg.get("scheduler", {"type":"cosine_wr", "T_0": 10, "T_mult": 2})
+            self.scheduler = (
+                CosineAnnealingWarmRestarts(
+                    self.optimizer,
+                    T_0=int(scfg.get("T_0", 10)),
+                    T_mult=int(scfg.get("T_mult", 2))
+                )
+                if (scfg or {}).get("type","cosine_wr")=="cosine_wr" else None
+            )
 
         # AMP scaler (nuova API)
         self.scaler = torch.amp.GradScaler(
@@ -189,7 +196,7 @@ class BaseTrainer:
             n = 1
             if targets_list is not None:
                 try:
-                    ys = [t.get(k if k!="age" else "age", -1) for t in targets_list]
+                    ys = [t.get(k, -1) for t in targets_list]
                     n = int(sum(1 for y in ys if y is not None and int(y) != -1))
                 except Exception:
                     n = len(targets_list)

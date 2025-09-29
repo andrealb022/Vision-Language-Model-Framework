@@ -41,7 +41,7 @@ class BaseTester:
 
         ds = self.dataset_obj(dataset_name)
         loader = DataLoader(ds, batch_size=self.batch_size, shuffle=False,
-                            num_workers=self.num_workers, pin_memory=True,
+                            num_workers=self.num_workers, pin_memory=(self.device.type == "cuda"),
                             collate_fn=collate_keep_pil)
 
         preds, gts = [], []

@@ -36,6 +36,18 @@ class VisionBackbone(nn.Module, ABC):
             torch.Tensor: embedding globali con shape [B, D] sul device `self.device`.
         """
         pass
+
+    @abstractmethod
+    def unfreeze_last_k_layers(self, k, parts, include_embeddings):
+        """
+        Sblocca i parametri negli ultimi k layer dell'encoder visivo (self.vision_model).
+        - Non congela gli altri parametri.
+        Args:
+            k (int): Numero di layer finali da sbloccare.
+            parts (str): Parti del modello da considerare (es. all, encoder ecc.).
+            include_embeddings (bool): Se True, considera anche il layer di embedding.
+        """
+        pass
     
     @abstractmethod
     def get_lora_target_names(self, strategy: Dict) -> List[str]:

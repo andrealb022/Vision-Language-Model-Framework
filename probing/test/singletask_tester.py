@@ -19,30 +19,33 @@ class SingleTaskTester(BaseTester):
 
         # estrai meta
         if "model" in self.head_cfg:
-            m = self.head_cfg["model"]
+            m  = self.head_cfg["model"]
+            bb = (m.get("backbone") or {})
             self.model_name   = m["name"]
             self.quantization = m.get("quantization", "fp32")
             self.deeper_head  = bool(m.get("deeper_head", False))
-            self.freeze_bb    = bool(m.get("freeze_backbone", True))
+            # preferisci il nuovo campo, poi fallback al vecchio
+            self.freeze_bb    = bool(bb.get("freeze", m.get("freeze_backbone", True)))
             self.dropout_p    = float(m.get("dropout_p", 0.3))
             self.hidden_dim   = int(m.get("hidden_dim", 512))
         else:
+            # vecchio formato piatto (unchanged)
             self.model_name   = self.head_cfg.get("model_name")
             self.quantization = self.head_cfg.get("quantization", "fp32")
             self.deeper_head  = bool(self.head_cfg.get("deeper_head", False))
             self.freeze_bb    = bool(self.head_cfg.get("freeze_backbone", True))
             self.dropout_p    = float(self.head_cfg.get("dropout_p", 0.3))
             self.hidden_dim   = int(self.head_cfg.get("hidden_dim", 512))
-
         self.task = str(self.head_cfg.get("task")).lower()
 
     def _load_head_config(self, ckpt_dir: Path) -> dict:
-        p = ckpt_dir / "head_config.yaml"
-        if not p.exists():
-            raise FileNotFoundError(f"head_config.yaml non trovato in {ckpt_dir}")
-        import yaml
-        with open(p, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+        for fname in ("head_config.yaml", "run_config.yaml"):  # <- fallback
+            p = ckpt_dir / fname
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    import yaml
+                    return yaml.safe_load(f)
+        raise FileNotFoundError(f"config non trovato in {ckpt_dir}")
 
     # --- BaseTester impl ---
     def load_backbone(self):

@@ -3,6 +3,7 @@ from PIL import Image
 from transformers import LlavaForConditionalGeneration
 from .base_model import VLMModel
 from .vision_backbone import VisionBackbone
+import re
 
 class LLaVAModel(VLMModel):
     """
@@ -69,7 +70,7 @@ class LLaVAModel(VLMModel):
             # Mantieni solo vision_tower, rimuovi gli altri sottocomponenti
             for name in list(self.model._modules.keys()):
                 if name != "vision_tower":
-                    print(f"Pulizia del modulo: {name}")
+                    #print(f"Pulizia del modulo: {name}")
                     delattr(self.model, name)
 
             # Sgancia riferimenti pesanti: il backbone ha già visual_tower + processor
@@ -116,13 +117,80 @@ class LLaVABackbone(VisionBackbone):
             return image_embeds.mean(dim=1)  # [B, D]
         else:
             raise ValueError(f"Strategia pooling '{strategy}' non supportata")
+
+    def unfreeze_last_k_layers(
+        self,
+        k: int = 2,
+        parts: str = "all",               # "all" | "attn" | "mlp"
+        include_embeddings: bool = True   # sblocca embeddings/norm globali/proj
+    ):
+        """
+        Sblocca i parametri negli ultimi k layer dell'encoder visivo (self.vision_model).
+        - Non congela gli altri parametri.
+        - Le LayerNorm dei layer selezionati sono sempre incluse.
+        - Non ritorna nulla; stampa un riepilogo finale.
+        """
+        # 1) individua gli indici dei layer encoder
+        layer_idxs = set()
+        for n, _ in self.vision_model.named_modules():
+            m = re.search(r"encoder\.layers\.(\d+)", n)
+            if m:
+                layer_idxs.add(int(m.group(1)))
+        if not layer_idxs:
+            raise RuntimeError("Non trovo 'encoder.layers.<idx>' in self.vision_model.")
+
+        ordered = sorted(layer_idxs)
+        selected = set(ordered[-int(k):]) if int(k) > 0 else set()
+
+        # 2) helper di selezione
+        def in_selected_layer(param_name: str) -> bool:
+            m = re.search(r"encoder\.layers\.(\d+)", param_name)
+            return bool(m) and int(m.group(1)) in selected
+
+        def want(param_name: str) -> bool:
+            if not in_selected_layer(param_name):
+                return False
+            attn_hits = (".self_attn.q_proj" in param_name or
+                        ".self_attn.k_proj" in param_name or
+                        ".self_attn.v_proj" in param_name or
+                        ".self_attn.out_proj" in param_name)
+            mlp_hits = (".mlp.fc1" in param_name or ".mlp.fc2" in param_name)
+            norm_hits = (".layer_norm" in param_name or ".ln" in param_name)  # sempre incluse
+
+            if parts == "all":
+                return True
+            if parts == "attn":
+                return attn_hits or norm_hits
+            if parts == "mlp":
+                return mlp_hits or norm_hits
+            return False
+
+        # 3) sblocca parametri selezionati (senza congelare gli altri)
+        for n, p in self.vision_model.named_parameters():
+            if want(n):
+                p.requires_grad = True
+
+        # 4) opzionale: embeddings / norm/proj globali
+        if include_embeddings:
+            extra_keys = (
+                "embeddings",            # patch/pos/class embeddings
+                "pre_", "post_",         # pre/post layernorm (varia per modello)
+                "proj",                  # projection heads
+                "final_layer_norm",
+            )
+            for n, p in self.vision_model.named_parameters():
+                if any(k in n for k in extra_keys):
+                    p.requires_grad = True
+
+        # 5) stampa riepilogo
+        print(f"[unfreeze_last_k_layers] Scongelati {len(selected)} layer (indici: {sorted(selected)})")
+
     
     def get_lora_target_names(self, strategy):
         """
         strategy es.: {"last_k": 2, "attn_only": True}
         Ritorna i nomi (relativi alla backbone) dei nn.Linear negli ultimi K layer del CLIP encoder.
         """
-        import re
         last_k = int(strategy.get("last_k", 2))
         attn_only = bool(strategy.get("attn_only", True))
 
