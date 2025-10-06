@@ -3,7 +3,9 @@ import numpy as np
 from typing import Dict, List, Optional
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 from probing.train.base_trainer import BaseTrainer
 from probing.train.utils import (
     collate_keep_pil,
@@ -11,7 +13,7 @@ from probing.train.utils import (
     counts_to_weights,
     targets_to_tensors,
 )
-from probing.train.losses import UncertaintyWeighter
+from probing.train.losses import RunningMeans
 from models.model_factory import VLMModelFactory
 from datasets_vlm.dataset_factory import DatasetFactory
 from probing.models.multitask_probe import MultiTaskProbe
@@ -20,12 +22,18 @@ from probing.models.multitask_probe import MultiTaskProbe
 class MultiTaskTrainer(BaseTrainer):
     def __init__(self, cfg: dict, run_name: str, ckpt_root: Path):
         self.tasks = [t.lower() for t in cfg["tasks"]]
-        # UW from YAML
+        # RunningMeans config
         tcfg = cfg["train"]
-        uw_cfg = (tcfg.get("uncertainty_weighting") or {})
-        self.uw_enabled = bool(uw_cfg.get("enabled", False))
-        self.uw_init_logv = float(uw_cfg.get("init_log_var", 0.0))
-        self.uw = None
+        rm_cfg = (tcfg.get("running_means") or {})
+        self.use_running_means = bool(rm_cfg.get("enabled", True))
+        self.rm_alpha = float(rm_cfg.get("alpha", 0.95))
+        self.rm: Optional[RunningMeans] = None
+        
+        # pesi statici (fallback per prime epoche / EMA non inizializzata)
+        tw_cfg = (tcfg.get("task_weights") or {})
+        self.static_task_weights = {t: float(tw_cfg.get(t, 1.0)) for t in self.tasks}
+        self.current_task_weights = {t: 1.0 for t in self.tasks}
+
         super().__init__(cfg, run_name, ckpt_root)
 
     def build_model(self) -> nn.Module:
@@ -58,48 +66,32 @@ class MultiTaskTrainer(BaseTrainer):
                 parts=unfreeze_parts,
                 include_embeddings=include_embeddings,
             )
-
-        # UW come modulo separato (come prima)
-        tcfg = self.cfg["train"]
-        uw_cfg = (tcfg.get("uncertainty_weighting") or {})
-        self.uw_enabled = bool(uw_cfg.get("enabled", False))
-        self.uw_init_logv = float(uw_cfg.get("init_log_var", 0.0))
-        self.uw = UncertaintyWeighter(self.tasks, init_log_var=self.uw_init_logv) if self.uw_enabled else None
         return probe
 
     def post_build(self):
-        # Porta UW sul device se abilitata
-        if self.uw is not None:
-            self.uw.to(self.device)
+        # Istanzia RunningMeans (dopo che self.tasks è definito)
+        if self.use_running_means:
+            self.rm = RunningMeans(self.tasks, alpha=self.rm_alpha)
 
         tcfg = self.cfg["train"]
         head_lr = float(tcfg.get("lr", 1e-4))
         backbone_lr = float(tcfg.get("backbone_lr", head_lr))
         weight_decay = float(tcfg.get("weight_decay", 1e-4))
 
-        # Separa parametri backbone vs heads (e UW)
+        # Separa parametri backbone vs heads
         backbone_params = [p for p in self.model.backbone.parameters() if p.requires_grad]
         head_params = [p for n, p in self.model.named_parameters()
                     if p.requires_grad and not n.startswith("backbone.")]
+        
         groups = []
         if head_params:
             groups.append({"params": head_params, "lr": head_lr})
         if backbone_params:
             groups.append({"params": backbone_params, "lr": backbone_lr})
-        if self.uw is not None:
-            groups.append({"params": list(self.uw.parameters()), "lr": head_lr})
 
         # Costruisci optimizer + scheduler
         self.optimizer = torch.optim.AdamW(groups, lr=head_lr, weight_decay=weight_decay)
-
-        scfg = (tcfg.get("scheduler") or {"type": "cosine_wr", "T_0": 10, "T_mult": 2})
-        if (scfg or {}).get("type", "cosine_wr") == "cosine_wr":
-            from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-            self.scheduler = CosineAnnealingWarmRestarts(
-                self.optimizer, T_0=int(scfg.get("T_0", 10)), T_mult=int(scfg.get("T_mult", 2))
-            )
-        else:
-            self.scheduler = None
+        self.scheduler = None # Lo istanzia il base trainer
 
     def build_dataloaders(self):
         dcfg = self.cfg["data"]
@@ -114,32 +106,6 @@ class MultiTaskTrainer(BaseTrainer):
         val_ds, _ = DatasetFactory.create_task_dataset(
             tasks=self.tasks, split="val", base_path=base_path, transform=None, num_classes=tasks_nclasses
         )
-
-        # --- Sampler dalla config (TASK-ONLY) ---
-        tcfg = self.cfg.get("train", {})
-        sampler_cfg = (tcfg.get("sampler") or {})
-        use_weighted = (
-            str(sampler_cfg.get("type", "")).lower() in {"weighted", "task_only"}
-            or bool(sampler_cfg.get("enabled", False))
-            or bool(tcfg.get("use_weighted_sampler", False))
-        )
-        beta = float(sampler_cfg.get("beta", tcfg.get("oversample_beta", 1.0)))
-        replacement = bool(sampler_cfg.get("replacement", True))
-
-        sampler = None
-        shuffle = True
-        if use_weighted:
-            per_sample_w = self._build_task_only_sample_weights(train_ds, self.tasks, agg_counts, beta=beta)
-            if float(np.sum(per_sample_w)) <= 0.0:
-                print("[Sampler] Tutti i pesi = 0 → uso pesi uniformi.")
-                per_sample_w = np.ones(len(train_ds), dtype=np.float32)
-            sampler = WeightedRandomSampler(
-                weights=torch.from_numpy(per_sample_w.astype(np.float32)),
-                num_samples=len(train_ds),
-                replacement=replacement,
-            )
-            shuffle = False
-
 
         # --- Class weights (per task) ---
         self.class_weights = {}
@@ -158,7 +124,7 @@ class MultiTaskTrainer(BaseTrainer):
         }
 
         train_loader = DataLoader(
-            train_ds, batch_size=batch_size, sampler=sampler, shuffle=shuffle,
+            train_ds, batch_size=batch_size, sampler=None, shuffle=True,
             num_workers=num_workers, pin_memory=True, drop_last=False,
             collate_fn=collate_keep_pil, persistent_workers=(num_workers > 0)
         )
@@ -189,18 +155,81 @@ class MultiTaskTrainer(BaseTrainer):
             losses[t] = loss_t
         return losses
 
-    def reduce_losses(self, loss_dict: dict) -> torch.Tensor:
-        if self.uw is not None:
-            return self.uw(loss_dict)
-        return super().reduce_losses(loss_dict)
+    # ---------- RunningMeans: pesi dinamici per epoca ----------
+    def _compute_task_weights(self) -> Dict[str, float]:
+        """Calcola i pesi per task: inverso della EMA, normalizzato per la media.
+        Se EMA non inizializzata, usa l'inverso del peso statico.
+        """
+        if not self.use_running_means or self.rm is None:
+            return dict(self.static_task_weights)
 
-    # ----- extra state (UW) -----
+        raw = []
+        for idx, t in enumerate(self.tasks):
+            m = self.rm.get_by_index(idx)
+            if m is None:
+                raw.append(1.0 / max(self.static_task_weights.get(t, 1.0), 1e-8))
+            else:
+                raw.append(1.0 / max(float(m), 1e-8))
+
+        avg = sum(raw) / max(1, len(raw))
+        return {t: raw[i] / avg for i, t in enumerate(self.tasks)}
+
+    def reduce_losses(self, loss_dict: dict) -> torch.Tensor:
+        # Se RunningMeans attivo usa i pesi correnti, altrimenti pesi statici
+        use_rm = bool(self.use_running_means and (self.rm is not None))
+        weights = self.current_task_weights if use_rm else self.static_task_weights
+
+        total = None
+        for t, l in loss_dict.items():
+            if torch.isfinite(l):
+                w = float(weights.get(t, 1.0))
+                total = (w * l) if total is None else total + (w * l)
+        if total is None:
+            return torch.zeros((), device=self.device, requires_grad=True)
+        return total
+
+    def on_train_epoch_start(self, epoch: int, epochs: int):
+        # Calcola i pesi per task a inizio epoca (RM o statici)
+        self.current_task_weights = self._compute_task_weights()
+        print(f"[Weights][Epoch {epoch+1}] " + " | ".join(
+            f"{k}={v:.3f}" for k, v in self.current_task_weights.items()
+        ))
+
+    def after_compute_losses(self, loss_dict: dict, batch):
+        # Aggiorna la EMA per-task SOLO se RM attivo e ci sono esempi validi
+        if not (self.use_running_means and (self.rm is not None)):
+            return
+        try:
+            targets_list = batch[1]
+        except Exception:
+            return
+        for idx, t in enumerate(self.tasks):
+            try:
+                ys = [ti.get(t, -1) for ti in targets_list]
+                n_valid = int(sum(1 for y in ys if y is not None and int(y) != -1))
+            except Exception:
+                n_valid = 0
+            if n_valid > 0 and torch.isfinite(loss_dict[t]):
+                self.rm.update_by_idx(float(loss_dict[t].detach().item()), idx)
+
+        # ----- extra state (RunningMeans) -----
     def extra_state_dicts(self) -> dict:
-        return {"uw": self.uw.state_dict()} if self.uw is not None else {}
+        blob = {}
+        if getattr(self, "rm", None) is not None:
+            blob["running_means"] = {
+                "alpha": self.rm.alpha,
+                "values": self.rm.values,
+                "history": self.rm.history,
+                "tasks": self.tasks,
+            }
+        return blob
 
     def load_extra_state_dicts(self, blob: dict):
-        if self.uw is not None and "uw" in blob:
-            self.uw.load_state_dict(blob["uw"], strict=False)
+        rm_blob = blob.get("running_means")
+        if getattr(self, "rm", None) is not None and rm_blob:
+            self.rm.alpha = float(rm_blob.get("alpha", self.rm.alpha))
+            self.rm.values = dict(rm_blob.get("values", self.rm.values))
+            self.rm.history = dict(rm_blob.get("history", self.rm.history))
 
     def run_meta(self) -> dict:
         meta = super().run_meta()
@@ -209,8 +238,7 @@ class MultiTaskTrainer(BaseTrainer):
         meta.update({
             "trainer": "multi_task",
             "tasks": self.tasks,
-            "uncertainty_weighting": bool(self.uw is not None),
-            "sampler_mode": "task_only" if self.cfg.get("train", {}).get("sampler") else "none",
+            "running_means": bool(self.rm is not None),
             "backbone": {
                 "freeze": bool(bb_cfg.get("freeze", mcfg.get("freeze_backbone", True))),
                 "unfreeze_last_k": int(bb_cfg.get("unfreeze_last_k", 0)),
@@ -219,43 +247,3 @@ class MultiTaskTrainer(BaseTrainer):
             },
         })
         return meta
-
-    # -------------------------------
-    # Task-only sample weights helper
-    # -------------------------------
-    @staticmethod
-    def _build_task_only_sample_weights(dataset, tasks: List[str], agg_counts: Dict[str, List[int]], beta: float = 0.99) -> np.ndarray:
-        """Costruisce pesi per-sample considerando SOLO la disponibilità del task (ignora le classi).
-        - Calcola un peso per task con formula class-balanced: w_t = (1-beta)/(1-beta^{n_t}), dove n_t = #label validi.
-        - Peso sample i = media dei w_t dei task per cui il sample ha label != -1. Se nessun task valido, peso=0.
-        """
-        # 1) Pesi per task basati sui conteggi validi
-        w_task: Dict[str, float] = {}
-        for t in tasks:
-            counts = agg_counts.get(t)
-            n_t = int(np.sum(counts)) if counts is not None else 0
-            if n_t <= 0:
-                w_task[t] = 0.0
-            else:
-                if beta >= 1.0:
-                    # evita divisione per zero: usa inverso della frequenza
-                    w_task[t] = 1.0 / float(n_t)
-                else:
-                    w_task[t] = (1.0 - beta) / (1.0 - (beta ** n_t))
-                    
-        N = len(dataset)
-        weights = np.zeros(N, dtype=np.float32)
-        for i in range(N):
-            _, ti = dataset[i]
-            present_w = []
-            for t in tasks:
-                yi = ti.get(t, -1)
-                if isinstance(yi, torch.Tensor):
-                    yi = yi.item()
-                if yi is not None and int(yi) != -1:
-                    present_w.append(w_task[t])
-            if present_w:
-                weights[i] = float(np.mean(present_w))
-            else:
-                weights[i] = 0.0  # nessun task valido
-        return weights

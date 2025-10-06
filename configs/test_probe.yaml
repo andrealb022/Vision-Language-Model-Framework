@@ -4,7 +4,7 @@ common:
 
 single:
   eval:
-    ckpt_from: probing/linear_probing/checkpoints/llava_fp32_emotion_linear
+    ckpt_from: probing/linear_probing/checkpoints/llava_fp32_gender_deeper
     dataset_name: auto
 
 multi:

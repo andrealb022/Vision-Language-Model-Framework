@@ -165,15 +165,7 @@ class SingleTaskTrainer(BaseTrainer):
                 groups.append({"params": backbone_params, "lr": backbone_lr})
 
             self.optimizer = torch.optim.AdamW(groups, lr=head_lr, weight_decay=weight_decay)
-
-        scfg = (tcfg.get("scheduler") or {"type": "cosine_wr", "T_0": 10, "T_mult": 2})
-        if (scfg or {}).get("type", "cosine_wr") == "cosine_wr":
-            from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-            self.scheduler = CosineAnnealingWarmRestarts(
-                self.optimizer, T_0=int(scfg.get("T_0", 10)), T_mult=int(scfg.get("T_mult", 2))
-            )
-        else:
-            self.scheduler = None
+            self.scheduler = None # Lo istanzia il base trainer
 
     # ------------ LOSS STEP ------------
     def compute_losses(self, batch, train: bool = True) -> dict:

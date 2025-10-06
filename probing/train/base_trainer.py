@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -49,14 +49,23 @@ class BaseTrainer:
                 weight_decay=float(tcfg.get("weight_decay", 1e-4)),
             )
         if self.scheduler is None:
-            scfg = tcfg.get("scheduler", {"type":"cosine_wr", "T_0": 10, "T_mult": 2})
+            es_patience = int(tcfg.get("patience", 5))
+            sched_patience = max(1, es_patience // 2)  # patience/2
+            scfg = tcfg.get("scheduler", {"factor": 0.1, "threshold": 1e-4})
+            factor = float(scfg.get("factor", 0.1))
+            threshold = float(scfg.get("threshold", 1e-4))
             self.scheduler = (
-                CosineAnnealingWarmRestarts(
+                ReduceLROnPlateau(
                     self.optimizer,
-                    T_0=int(scfg.get("T_0", 10)),
-                    T_mult=int(scfg.get("T_mult", 2))
+                    mode="min",
+                    factor=factor,
+                    patience=sched_patience,
+                    threshold=threshold,
+                    threshold_mode="rel",
+                    cooldown=0,
+                    min_lr=0.0,
+                    verbose=True,
                 )
-                if (scfg or {}).get("type","cosine_wr")=="cosine_wr" else None
             )
 
         # AMP scaler (nuova API)
@@ -81,13 +90,15 @@ class BaseTrainer:
     def compute_losses(self, batch, train: bool = True) -> dict: raise NotImplementedError
     def post_build(self): pass  # opzionale
 
-    # ----- Hooks per salvare extra state (es. UW) -----
+    # ----- Hooks per salvare extra state (es. RunningMeans) -----
     def extra_state_dicts(self) -> dict: return {}
     def load_extra_state_dicts(self, blob: dict): pass
+    def on_train_epoch_start(self, epoch: int, epochs: int): pass # Hook opzionale chiamato a inizio epoca (es. per calcolare pesi task)
+    def after_compute_losses(self, loss_dict: dict, batch): pass # Hook opzionale chiamato subito dopo compute_losses (es. per aggiornare EMA)
 
     # ----- Fit loop -----
     def fit(self):
-        epochs = int(self.cfg["train"].get("epochs", 30))
+        epochs = int(self.cfg["train"].get("epochs", 50))
         patience = int(self.cfg["train"].get("patience", 5))
         start_epoch, best_val = 0, float("inf")
 
@@ -115,9 +126,17 @@ class BaseTrainer:
             if do_val:
                 val_monitor = self.validate_epoch(epoch, epochs)
                 self.history["val"].append(val_monitor)
+                # Aggiorna ReduceLROnPlateau in base alla val loss
+                if isinstance(self.scheduler, ReduceLROnPlateau):
+                    self.scheduler.step(val_monitor)
             else:
-                # metti un NaN per mantenere allineamento con le epoche
-                self.history["val"].append(float("nan"))
+                # Ripeti l'ultimo valore noto di validazione, se esiste
+                if len(self.history["val"]) > 0:
+                    last_val = self.history["val"][-1]
+                    self.history["val"].append(last_val)
+                else:
+                    # Se è la prima epoca e non esiste alcun valore precedente
+                    self.history["val"].append(float("nan"))
 
             # Early stop & save best sul valore di validation SOLO quando valutato
             if do_val:
@@ -135,13 +154,14 @@ class BaseTrainer:
                 else:
                     patience_left -= 1
                     if patience_left <= 0:
-                        print(f"[EARLY STOP] epoch {epoch+1}. Best monitor: {best_val:.6f}")
+                        print(f"[EARLY STOP] epoch {epoch+1} (patience = {patience}). Best monitor: {best_val:.6f}")
                         break
         self._save_history_csv()
         self._save_history_plot()
 
     def train_one_epoch(self, epoch: int, epochs: int) -> float:
         running = self._init_agg()
+        self.on_train_epoch_start(epoch, epochs)
         progress_bar = tqdm(
             self.train_loader,
             desc=f"Train {epoch+1}/{epochs}",
@@ -155,6 +175,7 @@ class BaseTrainer:
                 dtype=self.autocast_dtype, enabled=self.amp_enabled
             ):
                 loss_dict = self.compute_losses(batch, train=True)
+                self.after_compute_losses(loss_dict, batch) # Consente, se serve, di aggiornare le EMA o altro prima della riduzione
                 loss = self.reduce_losses(loss_dict)
 
             if self.scaler.is_enabled():
@@ -162,10 +183,6 @@ class BaseTrainer:
                 self.scaler.step(self.optimizer); self.scaler.update()
             else:
                 loss.backward(); self.optimizer.step()
-
-            if self.scheduler:
-                # step continuo (per cosine WR)
-                self.scheduler.step(epoch + i / max(1, len(self.train_loader)))
 
             self._accumulate(running, loss_dict, batch)
             # calcola loss media corrente (totale)
@@ -176,9 +193,12 @@ class BaseTrainer:
                 k: running["sum"][k] / max(1, running["n"][k])
                 for k in running["sum"]
             }
-
+            # ottieni il learning rate corrente (dal primo gruppo dell'optimizer)
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            
             # aggiorna barra tqdm
             progress_bar.set_postfix({
+                "lr": f"{current_lr:.2e}",
                 "total": f"{total_mean:.4f}",
                 **{k: f"{v:.4f}" for k, v in per_task_means.items()}
             })
@@ -256,6 +276,8 @@ class BaseTrainer:
                 va_str = f"{va:.6f}" if np.isfinite(va) else ""
                 f.write(f"{i},{tr_str},{va_str}\n")
         print(f"[HISTORY] CSV salvato in: {csv_path}")
+        if self.rm is not None:
+            self.rm.save_history(self.ckpt_dir / "EMA_history.json")
 
     def _save_history_plot(self):
         # Grafico loss train/val
