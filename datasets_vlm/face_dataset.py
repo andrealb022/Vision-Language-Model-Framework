@@ -15,7 +15,7 @@ class FaceDataset(BaseDataset):
 
     SUPPORTED_DATASETS = [
         "CelebA_HQ", "FairFace", "LFW", "RAF-DB", "TestDataset", "UTKFace",
-        "VggFace2-Test", "VggFace2-Train"
+        "VggFace2-Test", "VggFace2-Train", "Lagenda"
     ]
 
     # Mapping nominale per etnie (usa solo queste 4 classi)
