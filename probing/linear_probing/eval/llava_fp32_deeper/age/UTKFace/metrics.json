@@ -1,7 +1,7 @@
 {
     "age": {
         "mode": "classification",
-        "accuracy": 0.578790141896938,
+        "accuracy": 0.6269189278898016,
         "labels": [
             "0-2",
             "3-9",
@@ -14,5 +14,5 @@
             "70+"
         ]
     },
-    "average_accuracy": 0.578790141896938
+    "average_accuracy": 0.6269189278898016
 }

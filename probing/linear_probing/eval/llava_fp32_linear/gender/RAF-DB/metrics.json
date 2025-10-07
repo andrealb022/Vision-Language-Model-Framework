@@ -1,10 +1,10 @@
 {
     "gender": {
-        "accuracy": 0.9557337051237365,
+        "accuracy": 0.9574764726385501,
         "labels": [
             0,
             1
         ]
     },
-    "average_accuracy": 0.9557337051237365
+    "average_accuracy": 0.9574764726385501
 }

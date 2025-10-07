@@ -1,6 +1,6 @@
 {
     "emotion": {
-        "accuracy": 0.8825374695015685,
+        "accuracy": 0.8814918089926804,
         "labels": [
             0,
             1,
@@ -11,5 +11,5 @@
             6
         ]
     },
-    "average_accuracy": 0.8825374695015685
+    "average_accuracy": 0.8814918089926804
 }

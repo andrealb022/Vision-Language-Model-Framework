@@ -31,11 +31,11 @@ common:
     scheduler:
       type: reduce_on_plateau
       factor: 0.1
-      threshold: 1.0e-4
+      threshold: 1.0e-3
 
 # ------------------- Configurazioni profilo single-task -------------------
 single:
-  task: gender
+  task: emotion
   model:
     backbone:
       freeze: true            # true = backbone congelata sempre
