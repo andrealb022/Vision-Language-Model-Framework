@@ -1,5 +1,5 @@
 # Scegli il profilo di default da usare (puoi sovrascrivere da CLI: --profile single|multi)
-profile: single
+profile: multi
 
 # ------------------- Configurazioni comuni -------------------
 common:
@@ -19,23 +19,25 @@ common:
     base_path: null
     batch_size: 256
     num_workers: 8
+    use_augmentation: false
+    use_sampler: false
 
   train:
     epochs: 100
-    lr: 0.0001                # LR teste di classificazione
-    backbone_lr: 0.0001       # LR backbone (può essere uguale a lr)
-    weight_decay: 0.0001
+    lr: 1e-4                # LR teste di classificazione
+    backbone_lr: 1e-5     # LR backbone (può essere uguale a lr)
+    weight_decay: 1e-4
     patience: 10
     amp: true
     eval_every: 1
     scheduler:
       type: reduce_on_plateau
       factor: 0.1
-      threshold: 1.0e-3
+      threshold: 1.0e-4
 
 # ------------------- Configurazioni profilo single-task -------------------
 single:
-  task: emotion
+  task: age
   model:
     backbone:
       freeze: true            # true = backbone congelata sempre
@@ -44,6 +46,10 @@ single:
 #------------------- Configurazioni profilo multi-task -------------------
 multi:
   tasks: [age, gender, emotion]
+  data:
+    augmentation: true
+    use_sampler: true
+
   model:
     backbone:
       freeze: true             # true = backbone congelata
@@ -51,8 +57,8 @@ multi:
       unfreeze_parts: all      # all | attn | mlp
       include_embeddings: true # true = include anche embeddings (valido solo se freeze=true)
   train:
-    lr: 0.0001                 # LR teste di classificazione
-    backbone_lr: 0.00005       # LR backbone (può essere uguale a lr)
+    lr: 1e-4                # LR teste di classificazione
+    backbone_lr: 1e-5       # LR backbone (può essere uguale a lr)
 
     running_means:
       enabled: true
