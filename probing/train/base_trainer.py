@@ -29,7 +29,7 @@ class BaseTrainer:
         set_seed(int(tcfg.get("seed", 42)))
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.amp_enabled = bool(tcfg.get("amp", True))
-        self.autocast_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
+        self.autocast_dtype = torch.float16 if self.device.type == "cuda" else torch.float32
 
         # model & data
         self.model = self.build_model().to(self.device)
@@ -104,7 +104,8 @@ class BaseTrainer:
                 self.model.load_state_dict(blob["model"], strict=False)
             else:
                 self.model.load_state_dict(blob, strict=False)
-            self.load_extra_state_dicts(blob)
+            if isinstance(blob, dict) and "model" in blob:
+                self.load_extra_state_dicts(blob)
             print(f"[RESUME] Pesi modello caricati da {self.model_file}")
         start_epoch, best_val = try_resume_training(
             self.state_file, self.optimizer, self.scheduler, self.scaler
@@ -166,7 +167,8 @@ class BaseTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device_type=("cuda" if self.device.type=="cuda" else "cpu"),
-                dtype=self.autocast_dtype, enabled=self.amp_enabled
+                dtype=self.autocast_dtype,
+                enabled=(self.amp_enabled and self.device.type=="cuda")  # <-
             ):
                 loss_dict = self.compute_losses(batch, train=True)
                 self.after_compute_losses(loss_dict, batch) # Consente, se serve, di aggiornare le EMA o altro prima della riduzione

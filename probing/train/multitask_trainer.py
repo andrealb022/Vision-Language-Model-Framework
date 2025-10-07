@@ -12,12 +12,13 @@ from probing.train.utils import (
     get_num_classes_for_task,
     counts_to_weights,
     targets_to_tensors,
+    build_weighted_sampler,
 )
 from probing.train.losses import RunningMeans
 from models.model_factory import VLMModelFactory
 from datasets_vlm.dataset_factory import DatasetFactory
 from probing.models.multitask_probe import MultiTaskProbe
-
+import torchvision.transforms as transforms
 
 class MultiTaskTrainer(BaseTrainer):
     def __init__(self, cfg: dict, run_name: str, ckpt_root: Path):
@@ -98,16 +99,38 @@ class MultiTaskTrainer(BaseTrainer):
         base_path   = dcfg.get("base_path", None)
         batch_size  = int(dcfg.get("batch_size", 64))
         num_workers = int(dcfg.get("num_workers", 8))
+        use_augmentation = bool(dcfg.get("use_augmentation", True))
+        use_sampler = bool(dcfg.get("use_sampler", True))
         tasks_nclasses = {t: get_num_classes_for_task(t) for t in self.tasks}
 
-        train_ds, agg_counts = DatasetFactory.create_task_dataset(
-            tasks=self.tasks, split="train", base_path=base_path, transform=None, num_classes=tasks_nclasses
-        )
-        val_ds, _ = DatasetFactory.create_task_dataset(
-            tasks=self.tasks, split="val", base_path=base_path, transform=None, num_classes=tasks_nclasses
+        # --- DATA AUGMENTATION ---
+        train_transforms = None
+        if use_augmentation:
+            train_transforms = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.RandomRotation(degrees=10),
+                transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.9, 1.1)),
+            ])
+        val_transforms = None
+
+        # --- Dataset TRAIN: sempre bilanciato su emotion=0.33 ---
+        desired = {"emotion": 0.33}
+        train_dataset, agg_counts = DatasetFactory.create_balanced_multi_task_dataset(
+            tasks=self.tasks, split="train",
+            base_path=base_path, transform=train_transforms,
+            num_classes=tasks_nclasses,
+            desired_fractions=desired
         )
 
-        # --- Class weights (per task) ---
+        # --- Dataset VAL: multi puro (dedup) ---
+        val_dataset, _ = DatasetFactory.create_multi_task_dataset(
+            tasks=self.tasks, split="val",
+            base_path=base_path, transform=val_transforms,
+            num_classes=tasks_nclasses
+        )
+
+        # --- Pesi per classe (da counts aggregati del TRAIN BASE, prima della duplicazione) ---
         self.class_weights = {}
         for t in self.tasks:
             counts = agg_counts.get(t) if isinstance(agg_counts, dict) else None
@@ -116,22 +139,49 @@ class MultiTaskTrainer(BaseTrainer):
             else:
                 w = counts_to_weights(np.asarray(counts, dtype=np.float64))
             self.class_weights[t] = torch.tensor(w, dtype=torch.float32, device=self.device)
+        print(f"Pesi classi:{self.class_weights}")
+        
+        # --- Loss per task (dipende da use_sampler) ---
+        if use_sampler:
+            # CE *senza* pesi di classe (il bilanciamento è nel sampler)
+            self.criterions = {t: nn.CrossEntropyLoss(weight=None).to(self.device) for t in self.tasks}
 
-        # --- Loss per task (masked) ---
-        self.criterions = {
-            t: nn.CrossEntropyLoss(weight=self.class_weights[t]).to(self.device)
-            for t in self.tasks
-        }
+            # sampler pesato per *campione* usando i pesi di classe per task
+            # passa solo i task che hai effettivamente (presenti in self.tasks)
+            task_class_weights = {t: self.class_weights.get(t, None) for t in self.tasks}
+            train_sampler, sample_weights = build_weighted_sampler(
+                dataset=train_dataset,
+                task_class_weights=task_class_weights,
+                combine="mean",
+                min_weight=1e-4,
+                normalize=True,
+                replacement=True,
+            )
+        else:
+            # CE *con* pesi di classe
+            self.criterions = {t: nn.CrossEntropyLoss(weight=self.class_weights[t]).to(self.device) for t in self.tasks}
+            train_sampler = None
 
         train_loader = DataLoader(
-            train_ds, batch_size=batch_size, sampler=None, shuffle=True,
-            num_workers=num_workers, pin_memory=True, drop_last=False,
-            collate_fn=collate_keep_pil, persistent_workers=(num_workers > 0)
+            train_dataset,
+            batch_size=batch_size,
+            sampler=train_sampler,
+            shuffle=False if train_sampler is not None else True,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collate_keep_pil,
+            persistent_workers=(num_workers > 0),
         )
-        val_loader   = DataLoader(
-            val_ds, batch_size=batch_size, shuffle=False,
-            num_workers=num_workers, pin_memory=True, drop_last=False,
-            collate_fn=collate_keep_pil, persistent_workers=(num_workers > 0)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collate_keep_pil,
+            persistent_workers=(num_workers > 0),
         )
         return train_loader, val_loader
 

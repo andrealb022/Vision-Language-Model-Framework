@@ -70,19 +70,17 @@ class SingleTaskTrainer(BaseTrainer):
         base_path   = dcfg.get("base_path", None)
         batch_size  = int(dcfg.get("batch_size", 64))
         num_workers = int(dcfg.get("num_workers", 8))
-        use_augmentation = bool(dcfg.get("augmentation", True))
+        use_augmentation = bool(dcfg.get("use_augmentation", False))
         nclasses = {self.task: get_num_classes_for_task(self.task)}
         
         # DATA AUGMENTATION
         train_transforms = None
-        if use augmentation:
+        if use_augmentation:
             train_transforms = transforms.Compose([
                 transforms.RandomHorizontalFlip(),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
                 transforms.RandomRotation(degrees=10),
                 transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.9, 1.1)),
-                *transform.transforms,
-                transforms.RandomErasing(p=0.5, scale=(0.02, 0.2), ratio=(0.3, 3.3))
             ])
 
         # dataset immagine (ordine deterministico per estrazione feature)
@@ -102,6 +100,8 @@ class SingleTaskTrainer(BaseTrainer):
         self.class_weights = {
             self.task: torch.tensor(w, dtype=torch.float32)
         }
+        print(f"Pesi classi:{self.class_weights}")
+        
         self.criterion = nn.CrossEntropyLoss(
             weight=self.class_weights[self.task].to(self.device),
             ignore_index=-1
