@@ -6,6 +6,7 @@ import numpy as np
 import yaml
 from .mivia_par_dataset import MiviaParDataset
 from .face_dataset import FaceDataset
+from .multitask_dataset import MultiTaskDataset, BalancedMultiTaskDataset
 
 # ------------------------- Counts utils -------------------------
 def aggregate_counts_from_datasets(
@@ -203,67 +204,107 @@ class DatasetFactory:
             transform=transform,
             **kwargs,
         )
-
+        
+# ---------------- MultiTask & Balanced creators ----------------
     @staticmethod
-    def create_task_dataset(
+    def create_multi_task_dataset(
         tasks: Iterable[str],
         split: str = "train",
         base_path=None,
         transform=None,
         num_classes: Optional[Dict[str, int]] = None,
         **kwargs,
-    ) -> tuple[ConcatDataset, Dict[str, Optional[np.ndarray]]]:
+    ) -> tuple[MultiTaskDataset, Dict[str, Optional[np.ndarray]]]:
         """
-        Crea un ConcatDataset unendo (senza duplicati) i dataset suggeriti per i `tasks`
-        nello `split` richiesto (train/val/test). La mappa proviene **solo** da YAML.
+        Ritorna un MultiTaskDataset che unisce i dataset richiesti UNA SOLA VOLTA
+        (dedup tra task) e i counts aggregati per task.
         """
+        factory = DatasetFactory
         tasks = [t.lower().strip() for t in tasks]
-        task_map = DatasetFactory._task_map_for_split(split)
+        task_map = factory._task_map_for_split(split)
 
-        valid = set(task_map.keys())
-        unknown = sorted(set(tasks) - valid)
+        unknown = sorted(set(tasks) - set(task_map.keys()))
         if unknown:
             raise ValueError(
                 f"Task non supportati per lo split '{split}': {unknown}. "
-                f"Definisci i task in configs/task_datasets.yaml."
+                f"Definiscili in configs/task_datasets.yaml."
             )
 
-        selected_names: List[str] = []
-        seen = set()
+        # dedup dei dataset mantenendo l'ordine
+        seen, selected_names = set(), []
         for t in tasks:
             for name in task_map[t]:
                 if name not in seen:
                     seen.add(name)
                     selected_names.append(name)
-
         if not selected_names:
             raise ValueError(f"Nessun dataset selezionato per tasks={tasks} nello split '{split}'")
 
-        print(f"[INFO] split={split} | tasks={tasks} → datasets: {selected_names}")
-
+        # istanzia i sotto-dataset
         instantiated = []
         for name in selected_names:
-            if name not in DatasetFactory._dataset_registry:
-                available = DatasetFactory.get_available_datasets()
+            if name not in factory._dataset_registry:
+                available = factory.get_available_datasets()
                 raise ValueError(
                     f"Il dataset '{name}' non è registrato nella factory. "
                     f"Disponibili: {sorted(available)}"
                 )
-            ds = DatasetFactory.create_dataset(
-                name, split=split, base_path=base_path, transform=transform, **kwargs
+            ds = factory.create_dataset(
+                dataset_name=name,
+                split=split,
+                base_path=base_path,
+                transform=transform,
+                **kwargs,
             )
             instantiated.append(ds)
 
-        concat_ds = ConcatDataset(instantiated)
+        mtd = MultiTaskDataset(instantiated, tasks=tasks)
 
-        # Aggrega counts
+        # Aggrega i counts per task (con pad/troncamento opzionale)
         num_classes = num_classes or {}
         counts_per_task: Dict[str, Optional[np.ndarray]] = {}
         for t in tasks:
-            k = num_classes.get(t, None)
-            counts_per_task[t] = aggregate_counts_from_datasets(concat_ds, t, num_classes=k)
+            k = num_classes.get(t)
+            counts_per_task[t] = aggregate_counts_from_datasets(mtd, t, num_classes=k)
 
-        return concat_ds, counts_per_task
+        return mtd, counts_per_task
+
+    @staticmethod
+    def create_balanced_multi_task_dataset(
+        tasks: Iterable[str],
+        split: str = "train",
+        *,
+        desired_fractions: Dict[str, float],
+        base_path=None,
+        transform=None,
+        num_classes: Optional[Dict[str, int]] = None,
+        duplicate_transform: Optional[callable] = None,
+        random_seed: Optional[int] = 0,
+        **kwargs,
+    ) -> tuple[BalancedMultiTaskDataset, Dict[str, Optional[np.ndarray]]]:
+        """
+        Crea un MultiTaskDataset deduplicato e lo avvolge con un BalancedMultiTaskDataset
+        che duplica campioni con label valida per raggiungere le frazioni desiderate.
+        I counts ritornati sono quelli del dataset base (pre-duplicazione).
+        """
+        factory = DatasetFactory
+        mtd, counts = factory.create_multi_task_dataset(
+            tasks=tasks,
+            split=split,
+            base_path=base_path,
+            transform=transform,
+            num_classes=num_classes,
+            **kwargs,
+        )
+
+        btd = BalancedMultiTaskDataset(
+            base_dataset=mtd,
+            tasks=[t.lower().strip() for t in tasks],
+            desired_fractions={k.lower().strip(): float(v) for k, v in desired_fractions.items()},
+            duplicate_transform=duplicate_transform,
+            random_seed=random_seed,
+        )
+        return btd, counts
 
 for _cls in DatasetFactory._registered_dataset_classes:
     DatasetFactory.register_dataset_class(_cls)

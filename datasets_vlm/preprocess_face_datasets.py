@@ -285,32 +285,22 @@ def age_float_to_bin(age_val: float) -> int:
             return idx
     return -1
 
-
 def age_to_class(v) -> int:
-    """
-    Converte un valore Age in classe 0..8:
-    - se stringa 'A-B' usa la tabella AGE_LABELS;
-    - altrimenti prova a interpretarlo come numero (float → bin).
-    Ritorna -1 se non interpretabile.
-    """
     if isinstance(v, str):
         s = v.strip()
-        if s in AGE_LABELS:
+        if s in AGE_LABELS:                 # es. "3-9"
             return AGE_LABELS[s]
         try:
             f = float(s)
         except Exception:
             return -1
-        return age_float_to_bin(f)
+        return age_float_to_bin(f)          # usa i tuoi AGE_BOUNDS
 
     try:
-        if isinstance(v, (int, np.integer)) and 0 <= int(v) <= 8:
-            return int(v)
-        f = float(v)
+        f = float(v)                        # <-- sempre float, niente “se 0..8 allora classe”
         return age_float_to_bin(f)
     except Exception:
         return -1
-
 
 def count_classes_for_train(dataset_dir: Path, verbose: bool) -> Optional[Dict[str, Dict[str, int]]]:
     """

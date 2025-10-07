@@ -72,7 +72,7 @@ class FaceDataset(BaseDataset):
         # Normalizza nomi colonne (tollerante a maiuscole/spazi)
         df.columns = [c.strip() for c in df.columns]
 
-        for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Loading labels"):
+        for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc=f"Loading labels ({self.name}_{self.split})"):
             try:
                 # Path relativo all'immagine
                 relative_path = Path(row["Path"].replace("\\", "/"))
