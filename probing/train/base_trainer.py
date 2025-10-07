@@ -50,23 +50,18 @@ class BaseTrainer:
             )
         if self.scheduler is None:
             es_patience = int(tcfg.get("patience", 5))
-            sched_patience = max(1, es_patience // 2)  # patience/2
+            sched_patience = int(max(1, es_patience // 2))  # patience/2
             scfg = tcfg.get("scheduler", {"factor": 0.1, "threshold": 1e-4})
             factor = float(scfg.get("factor", 0.1))
             threshold = float(scfg.get("threshold", 1e-4))
-            self.scheduler = (
-                ReduceLROnPlateau(
+            self.scheduler = ReduceLROnPlateau(
                     self.optimizer,
                     mode="min",
                     factor=factor,
                     patience=sched_patience,
                     threshold=threshold,
-                    threshold_mode="rel",
-                    cooldown=0,
-                    min_lr=0.0,
-                    verbose=True,
+                    threshold_mode='rel'
                 )
-            )
 
         # AMP scaler (nuova API)
         self.scaler = torch.amp.GradScaler(
@@ -114,7 +109,6 @@ class BaseTrainer:
         start_epoch, best_val = try_resume_training(
             self.state_file, self.optimizer, self.scheduler, self.scaler
         )
-
         patience_left = patience
         for epoch in range(start_epoch, epochs):
             self.model.train()
@@ -127,8 +121,8 @@ class BaseTrainer:
                 val_monitor = self.validate_epoch(epoch, epochs)
                 self.history["val"].append(val_monitor)
                 # Aggiorna ReduceLROnPlateau in base alla val loss
-                if isinstance(self.scheduler, ReduceLROnPlateau):
-                    self.scheduler.step(val_monitor)
+                if self.scheduler is not None:
+                    self.scheduler.step(float(val_monitor))
             else:
                 # Ripeti l'ultimo valore noto di validazione, se esiste
                 if len(self.history["val"]) > 0:
@@ -276,8 +270,9 @@ class BaseTrainer:
                 va_str = f"{va:.6f}" if np.isfinite(va) else ""
                 f.write(f"{i},{tr_str},{va_str}\n")
         print(f"[HISTORY] CSV salvato in: {csv_path}")
-        if self.rm is not None:
-            self.rm.save_history(self.ckpt_dir / "EMA_history.json")
+        if hasattr(self, 'rm'):
+            if self.rm is not None:
+                self.rm.save_history(self.ckpt_dir / "EMA_history.json")
 
     def _save_history_plot(self):
         # Grafico loss train/val

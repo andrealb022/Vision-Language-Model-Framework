@@ -16,7 +16,7 @@ from models.model_factory import VLMModelFactory
 from datasets_vlm.dataset_factory import DatasetFactory
 from probing.models.linear_probe import LinearProbe
 from tqdm import tqdm
-
+import torchvision.transforms as transforms
 
 class SingleTaskTrainer(BaseTrainer):
     """
@@ -70,13 +70,26 @@ class SingleTaskTrainer(BaseTrainer):
         base_path   = dcfg.get("base_path", None)
         batch_size  = int(dcfg.get("batch_size", 64))
         num_workers = int(dcfg.get("num_workers", 8))
+        use_augmentation = bool(dcfg.get("augmentation", True))
         nclasses = {self.task: get_num_classes_for_task(self.task)}
+        
+        # DATA AUGMENTATION
+        train_transforms = None
+        if use augmentation:
+            train_transforms = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.RandomRotation(degrees=10),
+                transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.9, 1.1)),
+                *transform.transforms,
+                transforms.RandomErasing(p=0.5, scale=(0.02, 0.2), ratio=(0.3, 3.3))
+            ])
 
         # dataset immagine (ordine deterministico per estrazione feature)
-        train_img_ds, agg_counts = DatasetFactory.create_task_dataset(
-            tasks=[self.task], split="train", base_path=base_path, transform=None, num_classes=nclasses
+        train_img_ds, agg_counts = DatasetFactory.create_multi_task_dataset(
+            tasks=[self.task], split="train", base_path=base_path, transform=train_transforms, num_classes=nclasses
         )
-        val_img_ds, _ = DatasetFactory.create_task_dataset(
+        val_img_ds, _ = DatasetFactory.create_multi_task_dataset(
             tasks=[self.task], split="val", base_path=base_path, transform=None, num_classes=nclasses
         )
 
@@ -165,7 +178,6 @@ class SingleTaskTrainer(BaseTrainer):
                 groups.append({"params": backbone_params, "lr": backbone_lr})
 
             self.optimizer = torch.optim.AdamW(groups, lr=head_lr, weight_decay=weight_decay)
-            self.scheduler = None # Lo istanzia il base trainer
 
     # ------------ LOSS STEP ------------
     def compute_losses(self, batch, train: bool = True) -> dict:

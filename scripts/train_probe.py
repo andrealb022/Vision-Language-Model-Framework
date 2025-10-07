@@ -83,7 +83,6 @@ def main():
         ckpt_root = Path(project_root or ".") / "probing" / "linear_probing" / "checkpoints"
         trainer = SingleTaskTrainer(cfg, run_name, ckpt_root)
 
-    trainer.post_build()
     trainer.fit()
 
 if __name__ == "__main__":
