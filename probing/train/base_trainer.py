@@ -168,7 +168,7 @@ class BaseTrainer:
             with torch.autocast(
                 device_type=("cuda" if self.device.type=="cuda" else "cpu"),
                 dtype=self.autocast_dtype,
-                enabled=(self.amp_enabled and self.device.type=="cuda")  # <-
+                enabled=(self.amp_enabled and self.device.type=="cuda")
             ):
                 loss_dict = self.compute_losses(batch, train=True)
                 self.after_compute_losses(loss_dict, batch) # Consente, se serve, di aggiornare le EMA o altro prima della riduzione
@@ -202,12 +202,18 @@ class BaseTrainer:
         monitor = self._epoch_log("train", running)
         return monitor
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def validate_epoch(self, epoch: int, epochs: int) -> float:
         self.model.eval()
         running = self._init_agg()
+        use_amp = (self.amp_enabled and self.device.type == "cuda")
         for batch in tqdm(self.val_loader, desc=f"Val {epoch+1}/{epochs}", unit="batch"):
-            loss_dict = self.compute_losses(batch, train=False)
+            with torch.autocast(
+                device_type=("cuda" if self.device.type=="cuda" else "cpu"),
+                dtype=self.autocast_dtype,
+                enabled=use_amp
+            ):
+                loss_dict = self.compute_losses(batch, train=False)
             self._accumulate(running, loss_dict, batch)
 
         monitor = self._epoch_log("val", running)
